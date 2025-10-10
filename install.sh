@@ -2,11 +2,11 @@
 set -euo pipefail
 
 if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root."
+  echo "Please run this script as root."
   exit 1
 fi
 
-# === Prompt Helper ===
+# === Helper for default prompts ===
 prompt_default() {
   local prompt="$1"
   local default="$2"
@@ -15,12 +15,12 @@ prompt_default() {
   echo "${input:-$default}"
 }
 
-# === Detect Firmware ===
+# === Firmware detection ===
 firmware="BIOS"
 [ -d /sys/firmware/efi ] && firmware="UEFI"
-echo "[+] Firmware detected: $firmware"
+echo "[+] Detected firmware: $firmware"
 
-# === Disk Selection ===
+# === Show and select disk ===
 echo "[+] Available disks:"
 lsblk -dn -o NAME,SIZE,MODEL | while read -r name size model; do
   echo "  /dev/$name  $size  $model"
@@ -28,26 +28,22 @@ done
 default_disk=$(lsblk -dn -o NAME | head -n1)
 disk=$(prompt_default "Choose install disk" "$default_disk")
 install_disk="/dev/$disk"
-
 if [ ! -b "$install_disk" ]; then
   echo "Invalid disk: $install_disk"
   exit 1
 fi
 
-echo "WARNING: This will ERASE ALL DATA on $install_disk!"
-confirm=$(prompt_default "Are you sure? Type YES to continue" "no")
+echo "!!! WARNING: This will ERASE ALL DATA on $install_disk !!!"
+confirm=$(prompt_default "Are you sure you want to continue? Type YES to confirm" "no")
 [[ "$confirm" == "YES" ]] || { echo "Aborted."; exit 1; }
 
-# === User Inputs ===
+# === Hostname and username ===
 hostname=$(prompt_default "Enter hostname" "artix")
 username=$(prompt_default "Enter username" "user")
 
-echo "[+] You will now set the password for $username later in chroot."
-
-# === Get Disk Size ===
+# === Disk size and partition layout ===
 disk_bytes=$(lsblk -b -dn -o SIZE "$install_disk")
 disk_size_mib=$((disk_bytes / 1024 / 1024))
-
 if [ "$disk_size_mib" -ge 35840 ]; then
   boot_end="+1G"
   root_end="+30G"
@@ -57,9 +53,9 @@ else
   root_end="+$((usable * 70 / 100))M"
 fi
 
+# === Partitioning ===
 echo "[+] Partitioning $install_disk"
 wipefs -a "$install_disk"
-
 {
   echo g
   echo n; echo; echo; echo "$boot_end"
@@ -73,7 +69,7 @@ wipefs -a "$install_disk"
   echo w
 } | fdisk "$install_disk"
 
-# === Partition Variables (with NVMe support) ===
+# === Partition variables (support for NVMe) ===
 if [[ "$install_disk" == *"nvme"* ]]; then
   boot="${install_disk}p1"
   root="${install_disk}p2"
@@ -84,19 +80,14 @@ else
   home="${install_disk}3"
 fi
 
-sleep 1
-
-# === Format Partitions ===
+# === Format partitions ===
 echo "[+] Formatting partitions"
-if [ "$firmware" = "UEFI" ]; then
-  mkfs.fat -F32 "$boot"
-else
-  mkfs.ext4 "$boot"
-fi
+[ "$firmware" = "UEFI" ] && mkfs.fat -F32 "$boot" || mkfs.ext4 "$boot"
 mkfs.ext4 "$root"
 mkfs.ext4 "$home"
 
 # === Mounting ===
+echo "[+] Mounting partitions"
 mount "$root" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot" /mnt/boot
@@ -109,20 +100,18 @@ basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim x
 # === Generate fstab ===
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# === Pass variables to chroot ===
+# === Configure inside chroot ===
 artix-chroot /mnt /bin/bash <<EOF
 set -e
 
-# === Timezone ===
+echo "[+] Setting timezone and locale"
 ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
 hwclock --systohc
-
-# === Locale ===
 sed -i '/^#en_US.UTF-8 UTF-8/s/^#//' /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-# === Hostname ===
+echo "[+] Setting hostname"
 echo "$hostname" > /etc/hostname
 cat > /etc/hosts <<EOL
 127.0.0.1       localhost
@@ -130,31 +119,42 @@ cat > /etc/hosts <<EOL
 127.0.1.1       $hostname.localdomain $hostname
 EOL
 
-# === Sudoers ===
+echo "[+] Enabling sudo for wheel group"
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# === Create user ===
+echo "[+] Setting root password"
+tries=0; max=3
+until passwd root; do
+  echo "Try again."
+  ((tries++))
+  [ "\$tries" -ge "\$max" ] && { echo "Too many failed attempts"; exit 1; }
+done
+
 echo "[+] Creating user '$username'"
 useradd -m -G wheel "$username"
-echo "Set password for $username:"
-passwd "$username"
+echo "[+] Setting password for $username"
+tries=0; max=3
+until passwd "$username"; do
+  echo "Try again."
+  ((tries++))
+  [ "\$tries" -ge "\$max" ] && { echo "Too many failed attempts"; exit 1; }
+done
 
-# === NetworkManager ===
+echo "[+] Installing NetworkManager"
 pacman -S --noconfirm networkmanager networkmanager-runit
 ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
 
-# === MAC Randomization ===
+echo "[+] Configuring MAC address randomization"
 mkdir -p /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/00-macrandomize.conf <<EOL
 [device]
 wifi.scan-rand-mac-address=yes
-
 [connection]
 wifi.cloned-mac-address=stable
 ethernet.cloned-mac-address=stable
 EOL
 
-# === GRUB ===
+echo "[+] Installing GRUB"
 if [ "$firmware" = "UEFI" ]; then
   pacman -S --noconfirm grub efibootmgr
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
@@ -164,13 +164,13 @@ else
 fi
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# === ALSA ===
+echo "[+] Installing ALSA"
 pacman -S --noconfirm alsa-utils alsa-utils-runit
 ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default
 EOF
 
-# === Post-chroot: Install dwm, dmenu, st ===
-echo "[+] Installing suckless tools for $username"
+# === Post-chroot: install dwm, dmenu, st ===
+echo "[+] Installing suckless tools (dwm, dmenu, st) for user $username"
 runuser -u "$username" -- bash <<EOS
 cd ~
 mkdir -p .config && cd .config
@@ -182,7 +182,6 @@ for dir in dwm dmenu st; do
   make install
   cd ..
 done
-
 echo "exec dwm" > ~/.xinitrc
 
 cat > ~/.bash_profile <<EOF
@@ -192,4 +191,4 @@ fi
 EOF
 EOS
 
-echo "[✔] Installation complete. Reboot when ready."
+echo "[✔] Installation complete. Type 'reboot' to restart into your new system."
