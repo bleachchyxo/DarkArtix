@@ -1,32 +1,32 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 if [ "$EUID" -ne 0 ]; then
-  echo "Run this script as root."
+  echo "Please run as root."
   exit 1
 fi
 
-# ====== Detect Firmware ======
-if [ -d /sys/firmware/efi ]; then
-  firmware="UEFI"
-else
-  firmware="BIOS"
-fi
+# === Prompt Helper ===
+prompt_default() {
+  local prompt="$1"
+  local default="$2"
+  local input
+  read -rp "$prompt [$default]: " input
+  echo "${input:-$default}"
+}
+
+# === Detect Firmware ===
+firmware="BIOS"
+[ -d /sys/firmware/efi ] && firmware="UEFI"
 echo "[+] Firmware detected: $firmware"
 
-# ====== Select Target Disk ======
-echo
+# === Disk Selection ===
 echo "[+] Available disks:"
-lsblk -d -e7 -o NAME,SIZE,MODEL | grep -v loop | while read -r line; do
-  dev=$(echo "$line" | awk '{print $1}')
-  size=$(echo "$line" | awk '{print $2}')
-  model=$(echo "$line" | cut -d' ' -f3-)
-  echo "  /dev/$dev - $size - $model"
+lsblk -dn -o NAME,SIZE,MODEL | while read -r name size model; do
+  echo "  /dev/$name  $size  $model"
 done
-
-default_disk=$(lsblk -d -e7 -o NAME | grep -v loop | head -n1)
-read -rp "Enter install disk [default: /dev/$default_disk]: " disk_input
-disk="${disk_input:-$default_disk}"
+default_disk=$(lsblk -dn -o NAME | head -n1)
+disk=$(prompt_default "Choose install disk" "$default_disk")
 install_disk="/dev/$disk"
 
 if [ ! -b "$install_disk" ]; then
@@ -34,104 +34,127 @@ if [ ! -b "$install_disk" ]; then
   exit 1
 fi
 
-# Confirm selection with default prompt
-read -rp "Install to $install_disk? [Y/n]: " confirm
-confirm="${confirm,,}"  # to lowercase
-if [[ "$confirm" =~ ^(n|no)$ ]]; then
-  echo "Aborted."
-  exit 1
+echo "WARNING: This will ERASE ALL DATA on $install_disk!"
+confirm=$(prompt_default "Are you sure? Type YES to continue" "no")
+[[ "$confirm" == "YES" ]] || { echo "Aborted."; exit 1; }
+
+# === User Inputs ===
+hostname=$(prompt_default "Enter hostname" "artix")
+username=$(prompt_default "Enter username" "user")
+
+echo "[+] You will now set the password for $username later in chroot."
+
+# === Get Disk Size ===
+disk_bytes=$(lsblk -b -dn -o SIZE "$install_disk")
+disk_size_mib=$((disk_bytes / 1024 / 1024))
+
+if [ "$disk_size_mib" -ge 35840 ]; then
+  boot_end="+1G"
+  root_end="+30G"
+else
+  boot_end="+1G"
+  usable=$((disk_size_mib - 1024))
+  root_end="+$((usable * 70 / 100))M"
 fi
 
-# ====== Auto Partition (Default Layout) ======
-echo "[+] Partitioning $install_disk..."
-
+echo "[+] Partitioning $install_disk"
 wipefs -a "$install_disk"
-echo -e "g\nn\n1\n\n+512M\nt\n1\nn\n2\n\n+30G\nn\n3\n\n\nw" | fdisk "$install_disk"
 
-boot="${install_disk}1"
-root="${install_disk}2"
-home="${install_disk}3"
+{
+  echo g
+  echo n; echo; echo; echo "$boot_end"
+  if [ "$firmware" = "UEFI" ]; then
+    echo t; echo 1; echo ef00
+  else
+    echo t; echo 1; echo 83
+  fi
+  echo n; echo; echo; echo "$root_end"
+  echo n; echo; echo; echo
+  echo w
+} | fdisk "$install_disk"
+
+# === Partition Variables (with NVMe support) ===
+if [[ "$install_disk" == *"nvme"* ]]; then
+  boot="${install_disk}p1"
+  root="${install_disk}p2"
+  home="${install_disk}p3"
+else
+  boot="${install_disk}1"
+  root="${install_disk}2"
+  home="${install_disk}3"
+fi
 
 sleep 1
 
-# ====== Format Partitions ======
-echo "[+] Formatting partitions..."
-
+# === Format Partitions ===
+echo "[+] Formatting partitions"
 if [ "$firmware" = "UEFI" ]; then
   mkfs.fat -F32 "$boot"
 else
   mkfs.ext4 "$boot"
 fi
-
 mkfs.ext4 "$root"
 mkfs.ext4 "$home"
 
-# ====== Mount Partitions ======
-echo "[+] Mounting partitions..."
-
+# === Mounting ===
 mount "$root" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot" /mnt/boot
 mount "$home" /mnt/home
 
-# ====== Base Installation ======
-echo "[+] Installing base system..."
-basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim git
+# === Install base system ===
+echo "[+] Installing base system"
+basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim xorg-server xorg-xinit git
 
-fstabgen -U /mnt >> /mnt/etc/fstab
+# === Generate fstab ===
+fstabgen -U /mnt > /mnt/etc/fstab
 
-# ====== Enter chroot ======
-artix-chroot /mnt /bin/bash <<'EOF_CHROOT'
+# === Pass variables to chroot ===
+artix-chroot /mnt /bin/bash <<EOF
+set -e
 
-# ====== Timezone Selection ======
-echo "[*] Timezone setup..."
-
-CONTINENTS=$(ls /usr/share/zoneinfo | grep -v Etc | grep -v posix | grep -v right)
-default_continent="America"
-echo "Available continents:"
-echo "$CONTINENTS" | nl
-read -rp "Continent [default: $default_continent]: " cont_input
-continent="${cont_input:-$default_continent}"
-
-COUNTRIES=$(ls "/usr/share/zoneinfo/$continent" 2>/dev/null)
-default_country="New_York"
-echo "Available cities in $continent:"
-echo "$COUNTRIES" | nl
-read -rp "City [default: $default_country]: " city_input
-city="${city_input:-$default_country}"
-
-ln -sf "/usr/share/zoneinfo/$continent/$city" /etc/localtime
+# === Timezone ===
+ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
 hwclock --systohc
 
-# ====== Locale ======
-echo "[*] Setting locale..."
-sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
+# === Locale ===
+sed -i '/^#en_US.UTF-8 UTF-8/s/^#//' /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-# ====== Hostname ======
-read -rp "Enter hostname [default: artix]: " hn
-hostname="${hn:-artix}"
+# === Hostname ===
 echo "$hostname" > /etc/hostname
+cat > /etc/hosts <<EOL
+127.0.0.1       localhost
+::1             localhost
+127.0.1.1       $hostname.localdomain $hostname
+EOL
 
-cat <<EOF_HOSTS >> /etc/hosts
-127.0.0.1    localhost
-::1          localhost
-127.0.1.1    ${hostname}.localdomain ${hostname}
-EOF_HOSTS
-
-# ====== Sudo Setup ======
-echo "[*] Installing sudo and enabling wheel group..."
-pacman -S --noconfirm sudo
+# === Sudoers ===
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# ====== User Setup ======
-read -rp "New username [default: user]: " uname
-username="${uname:-user}"
+# === Create user ===
+echo "[+] Creating user '$username'"
 useradd -m -G wheel "$username"
+echo "Set password for $username:"
 passwd "$username"
 
-# ====== GRUB Bootloader ======
+# === NetworkManager ===
+pacman -S --noconfirm networkmanager networkmanager-runit
+ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
+
+# === MAC Randomization ===
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/00-macrandomize.conf <<EOL
+[device]
+wifi.scan-rand-mac-address=yes
+
+[connection]
+wifi.cloned-mac-address=stable
+ethernet.cloned-mac-address=stable
+EOL
+
+# === GRUB ===
 if [ "$firmware" = "UEFI" ]; then
   pacman -S --noconfirm grub efibootmgr
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
@@ -141,36 +164,32 @@ else
 fi
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# ====== NetworkManager ======
-pacman -S --noconfirm networkmanager networkmanager-runit
-ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
-
-# ====== ALSA Audio ======
+# === ALSA ===
 pacman -S --noconfirm alsa-utils alsa-utils-runit
 ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default
+EOF
 
-# ====== DWM, dmenu, st ======
-echo "[*] Installing DWM..."
-cd /home/"$username"
-sudo -u "$username" mkdir -p .config
-cd .config
-sudo -u "$username" git clone https://git.suckless.org/dwm
-sudo -u "$username" git clone https://git.suckless.org/dmenu
-sudo -u "$username" git clone https://git.suckless.org/st
-
-for pkg in dwm dmenu st; do
-  cd "/home/$username/.config/$pkg"
-  sudo -u "$username" make install
+# === Post-chroot: Install dwm, dmenu, st ===
+echo "[+] Installing suckless tools for $username"
+runuser -u "$username" -- bash <<EOS
+cd ~
+mkdir -p .config && cd .config
+git clone https://git.suckless.org/dwm
+git clone https://git.suckless.org/dmenu
+git clone https://git.suckless.org/st
+for dir in dwm dmenu st; do
+  cd "\$dir"
+  make install
+  cd ..
 done
 
-# ====== Autostart X and DWM ======
-sudo -u "$username" bash -c 'echo "exec dwm" > ~/.xinitrc'
-sudo -u "$username" bash -c 'cat <<EOF_BASH > ~/.bash_profile
-if [[ -z \$DISPLAY ]] && [[ \$(tty) = /dev/tty1 ]]; then
+echo "exec dwm" > ~/.xinitrc
+
+cat > ~/.bash_profile <<EOF
+if [[ -z \$DISPLAY ]] && [[ \$(tty) == /dev/tty1 ]]; then
   startx
 fi
-EOF_BASH'
+EOF
+EOS
 
-EOF_CHROOT
-
-echo "[+] Installation complete. You can now reboot."
+echo "[✔] Installation complete. Reboot when ready."
