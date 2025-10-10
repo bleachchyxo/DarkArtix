@@ -6,7 +6,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# === Helper for default prompts ===
+# === Helpers ===
 prompt_default() {
   local prompt="$1"
   local default="$2"
@@ -15,12 +15,12 @@ prompt_default() {
   echo "${input:-$default}"
 }
 
-# === Firmware detection ===
+# === Detect firmware ===
 firmware="BIOS"
 [ -d /sys/firmware/efi ] && firmware="UEFI"
 echo "[+] Detected firmware: $firmware"
 
-# === Show and select disk ===
+# === Disk selection ===
 echo "[+] Available disks:"
 lsblk -dn -o NAME,SIZE,MODEL | while read -r name size model; do
   echo "  /dev/$name  $size  $model"
@@ -28,6 +28,7 @@ done
 default_disk=$(lsblk -dn -o NAME | head -n1)
 disk=$(prompt_default "Choose install disk" "$default_disk")
 install_disk="/dev/$disk"
+
 if [ ! -b "$install_disk" ]; then
   echo "Invalid disk: $install_disk"
   exit 1
@@ -35,13 +36,16 @@ fi
 
 echo "!!! WARNING: This will ERASE ALL DATA on $install_disk !!!"
 confirm=$(prompt_default "Are you sure you want to continue? Type YES to confirm" "no")
-[[ "$confirm" == "YES" ]] || { echo "Aborted."; exit 1; }
+case "$confirm" in
+  [Yy][Ee][Ss]) ;;
+  *) echo "Aborted."; exit 1 ;;
+esac
 
-# === Hostname and username ===
+# === Hostname and Username ===
 hostname=$(prompt_default "Enter hostname" "artix")
 username=$(prompt_default "Enter username" "user")
 
-# === Disk size and partition layout ===
+# === Disk partition sizes ===
 disk_bytes=$(lsblk -b -dn -o SIZE "$install_disk")
 disk_size_mib=$((disk_bytes / 1024 / 1024))
 if [ "$disk_size_mib" -ge 35840 ]; then
@@ -69,7 +73,7 @@ wipefs -a "$install_disk"
   echo w
 } | fdisk "$install_disk"
 
-# === Partition variables (support for NVMe) ===
+# === Handle partition names (nvme) ===
 if [[ "$install_disk" == *"nvme"* ]]; then
   boot="${install_disk}p1"
   root="${install_disk}p2"
@@ -100,11 +104,11 @@ basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim x
 # === Generate fstab ===
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# === Configure inside chroot ===
+# === Configure system inside chroot ===
 artix-chroot /mnt /bin/bash <<EOF
 set -e
 
-echo "[+] Setting timezone and locale"
+echo "[+] Configuring timezone and locale"
 ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
 hwclock --systohc
 sed -i '/^#en_US.UTF-8 UTF-8/s/^#//' /etc/locale.gen
@@ -119,32 +123,36 @@ cat > /etc/hosts <<EOL
 127.0.1.1       $hostname.localdomain $hostname
 EOL
 
-echo "[+] Enabling sudo for wheel group"
+echo "[+] Configuring sudo"
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
 echo "[+] Setting root password"
+set +e
 tries=0; max=3
 until passwd root; do
   echo "Try again."
   ((tries++))
   [ "\$tries" -ge "\$max" ] && { echo "Too many failed attempts"; exit 1; }
 done
+set -e
 
 echo "[+] Creating user '$username'"
 useradd -m -G wheel "$username"
+
 echo "[+] Setting password for $username"
+set +e
 tries=0; max=3
 until passwd "$username"; do
   echo "Try again."
   ((tries++))
   [ "\$tries" -ge "\$max" ] && { echo "Too many failed attempts"; exit 1; }
 done
+set -e
 
 echo "[+] Installing NetworkManager"
 pacman -S --noconfirm networkmanager networkmanager-runit
 ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
 
-echo "[+] Configuring MAC address randomization"
 mkdir -p /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/00-macrandomize.conf <<EOL
 [device]
@@ -169,8 +177,8 @@ pacman -S --noconfirm alsa-utils alsa-utils-runit
 ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default
 EOF
 
-# === Post-chroot: install dwm, dmenu, st ===
-echo "[+] Installing suckless tools (dwm, dmenu, st) for user $username"
+# === Post-chroot: install suckless tools ===
+echo "[+] Installing suckless tools for user: $username"
 runuser -u "$username" -- bash <<EOS
 cd ~
 mkdir -p .config && cd .config
