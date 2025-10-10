@@ -1,12 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# === Root check ===
 if [ "$EUID" -ne 0 ]; then
   echo "Run this script as root."
   exit 1
 fi
 
-# === Helper: prompt with default ===
+# === Helper: default prompt ===
 prompt_default() {
   local prompt="$1"
   local default="$2"
@@ -20,7 +21,7 @@ firmware="BIOS"
 [ -d /sys/firmware/efi ] && firmware="UEFI"
 echo "[+] Firmware detected: $firmware"
 
-# === Show available disks ===
+# === Disk selection ===
 echo "[+] Available disks:"
 lsblk -dn -o NAME,SIZE,MODEL | while read -r name size model; do
   echo "  /dev/$name  $size  $model"
@@ -34,7 +35,7 @@ if [ ! -b "$install_disk" ]; then
   exit 1
 fi
 
-# === Confirm disk erase ===
+# === Confirm disk wipe ===
 echo "!!! WARNING: This will ERASE ALL DATA on $install_disk !!!"
 confirm=$(prompt_default "Type YES to confirm" "no")
 if ! [[ "$confirm" =~ ^[Yy][Ee][Ss]$ ]]; then
@@ -42,11 +43,10 @@ if ! [[ "$confirm" =~ ^[Yy][Ee][Ss]$ ]]; then
   exit 1
 fi
 
-# === Hostname and username ===
+# === User setup ===
 hostname=$(prompt_default "Enter hostname" "artix")
 username=$(prompt_default "Enter username" "user")
 
-# === Ask for passwords upfront ===
 echo "[+] Set root password"
 while true; do
   read -rsp "New root password: " root_pass1; echo
@@ -80,53 +80,48 @@ fi
 echo "[+] Partitioning $install_disk"
 wipefs -a "$install_disk"
 
-# === Partition scheme ===
+# === Partition layout ===
 {
-  echo g  # GPT label
+  echo g
 
   if [ "$firmware" = "BIOS" ]; then
-    # BIOS + GPT requires bios_grub partition (1MB, ef02)
-    echo n; echo; echo; echo +1M
-    echo t; echo 1; echo 4  # ef02 BIOS boot
-    # Boot partition
-    echo n; echo; echo; echo "$boot_end"
-    echo t; echo 2; [ "$firmware" = "UEFI" ] && echo ef00 || echo 83
-    # Root partition
-    echo n; echo; echo; echo "$root_end"
-    # Home partition (rest)
-    echo n; echo; echo; echo
-    echo w
+    echo n; echo 1; echo; echo +1M
+    echo t; echo 1; echo 4  # EF02 BIOS boot
+
+    echo n; echo 2; echo; echo "$boot_end"
+    echo t; echo 2; echo 83  # Linux
+
+    echo n; echo 3; echo; echo "$root_end"
+    echo n; echo 4; echo; echo
   else
-    # UEFI GPT
-    # Boot partition (EFI system)
-    echo n; echo; echo; echo "$boot_end"
+    echo n; echo 1; echo; echo "$boot_end"
     echo t; echo 1; echo ef00
-    # Root partition
-    echo n; echo; echo; echo "$root_end"
-    # Home partition (rest)
-    echo n; echo; echo; echo
-    echo w
+
+    echo n; echo 2; echo; echo "$root_end"
+    echo n; echo 3; echo; echo
   fi
+
+  echo w
 } | fdisk "$install_disk"
 
-# === Partition naming for NVMe and others ===
+# === Partition naming (sdX vs nvmeXn1) ===
 if [[ "$install_disk" == *"nvme"* ]]; then
-  prefix="${install_disk}p"
+  p="${install_disk}p"
 else
-  prefix="${install_disk}"
+  p="$install_disk"
 fi
 
-if [ "$firmware" = "UEFI" ]; then
-  boot="${prefix}1"
-  root="${prefix}2"
-  home="${prefix}3"
+if [ "$firmware" = "BIOS" ]; then
+  boot="${p}2"
+  root="${p}3"
+  home="${p}4"
 else
-  boot="${prefix}2"
-  root="${prefix}3"
-  home="${prefix}4"
+  boot="${p}1"
+  root="${p}2"
+  home="${p}3"
 fi
 
-# === Format partitions ===
+# === Formatting ===
 echo "[+] Formatting partitions"
 if [ "$firmware" = "UEFI" ]; then
   mkfs.fat -F32 "$boot"
@@ -136,21 +131,21 @@ fi
 mkfs.ext4 "$root"
 mkfs.ext4 "$home"
 
-# === Mount partitions ===
-echo "[+] Mounting partitions"
+# === Mounting ===
+echo "[+] Mounting filesystems"
 mount "$root" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot" /mnt/boot
 mount "$home" /mnt/home
 
-# === Install base system ===
+# === Base system install ===
 echo "[+] Installing base system"
 basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim xorg-server xorg-xinit git
 
-# === Generate fstab ===
+# === fstab ===
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# === Chroot configuration ===
+# === Chroot config ===
 artix-chroot /mnt /bin/bash <<EOF
 set -e
 
@@ -159,31 +154,31 @@ ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
 hwclock --systohc
 sed -i '/^#en_US.UTF-8 UTF-8/s/^#//' /etc/locale.gen
 locale-gen
-echo LANG=en_US.UTF-8 > /etc/locale.conf
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-# Hostname
+# Hostname and hosts
 echo "$hostname" > /etc/hostname
 cat > /etc/hosts <<EOL
-127.0.0.1       localhost
-::1             localhost
-127.0.1.1       $hostname.localdomain $hostname
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   $hostname.localdomain $hostname
 EOL
 
 # Sudoers
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# Set root password
+# Root password
 echo "root:$root_pass1" | chpasswd
 
-# Create user and set password
+# Create user
 useradd -m -G wheel "$username"
 echo "$username:$user_pass1" | chpasswd
 
-# Install and enable NetworkManager
+# NetworkManager
 pacman -S --noconfirm networkmanager networkmanager-runit
 ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
 
-# MAC randomization config
+# MAC randomization
 mkdir -p /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/00-macrandomize.conf <<EOL
 [device]
@@ -193,7 +188,7 @@ wifi.cloned-mac-address=stable
 ethernet.cloned-mac-address=stable
 EOL
 
-# Install GRUB bootloader
+# GRUB
 if [ "$firmware" = "UEFI" ]; then
   pacman -S --noconfirm grub efibootmgr
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
@@ -201,17 +196,15 @@ else
   pacman -S --noconfirm grub
   grub-install --target=i386-pc "$install_disk"
 fi
-
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# Install ALSA for audio
+# ALSA
 pacman -S --noconfirm alsa-utils alsa-utils-runit
 ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default
-
 EOF
 
-# === Install suckless tools dwm, dmenu, st as user ===
-echo "[+] Installing suckless tools (dwm, dmenu, st) for user $username"
+# === Suckless tools ===
+echo "[+] Installing dwm, dmenu, st for $username"
 runuser -u "$username" -- bash <<EOS
 cd ~
 mkdir -p .config && cd .config
@@ -225,12 +218,11 @@ for dir in dwm dmenu st; do
 done
 
 echo "exec dwm" > ~/.xinitrc
-
-cat > ~/.bash_profile <<EOF
+cat > ~/.bash_profile <<EOL
 if [[ -z \$DISPLAY ]] && [[ \$(tty) == /dev/tty1 ]]; then
   startx
 fi
-EOF
+EOL
 EOS
 
-echo "[✔] Installation complete! Reboot now."
+echo "[✔] All done. You can now reboot into your new system!"
