@@ -18,7 +18,7 @@ prompt_default() {
 # === Detect firmware ===
 firmware="BIOS"
 [ -d /sys/firmware/efi ] && firmware="UEFI"
-echo "[+] Firmware: $firmware"
+echo "[+] Firmware detected: $firmware"
 
 # === Show available disks ===
 echo "[+] Available disks:"
@@ -35,8 +35,8 @@ if [ ! -b "$install_disk" ]; then
 fi
 
 # === Confirm disk erase ===
-echo "!!! This will ERASE ALL DATA on $install_disk !!!"
-confirm=$(prompt_default "Are you sure? Type YES to continue" "no")
+echo "!!! WARNING: This will ERASE ALL DATA on $install_disk !!!"
+confirm=$(prompt_default "Type YES to confirm" "no")
 if ! [[ "$confirm" =~ ^[Yy][Ee][Ss]$ ]]; then
   echo "Aborted."
   exit 1
@@ -55,7 +55,7 @@ while true; do
   echo "Passwords do not match. Try again."
 done
 
-echo "[+] Set password for $username"
+echo "[+] Set password for user '$username'"
 while true; do
   read -rsp "New password for $username: " user_pass1; echo
   read -rsp "Confirm password for $username: " user_pass2; echo
@@ -63,9 +63,11 @@ while true; do
   echo "Passwords do not match. Try again."
 done
 
-# === Partitioning ===
+# === Get disk size ===
 disk_bytes=$(lsblk -b -dn -o SIZE "$install_disk")
 disk_size_mib=$((disk_bytes / 1024 / 1024))
+
+# === Partition sizes ===
 if [ "$disk_size_mib" -ge 35840 ]; then
   boot_end="+1G"
   root_end="+30G"
@@ -77,37 +79,65 @@ fi
 
 echo "[+] Partitioning $install_disk"
 wipefs -a "$install_disk"
+
+# === Partition scheme ===
 {
-  echo g
-  echo n; echo; echo; echo "$boot_end"
-  if [ "$firmware" = "UEFI" ]; then
-    echo t; echo 1; echo ef00
+  echo g  # GPT label
+
+  if [ "$firmware" = "BIOS" ]; then
+    # BIOS + GPT requires bios_grub partition (1MB, ef02)
+    echo n; echo; echo; echo +1M
+    echo t; echo 1; echo 4  # ef02 BIOS boot
+    # Boot partition
+    echo n; echo; echo; echo "$boot_end"
+    echo t; echo 2; [ "$firmware" = "UEFI" ] && echo ef00 || echo 83
+    # Root partition
+    echo n; echo; echo; echo "$root_end"
+    # Home partition (rest)
+    echo n; echo; echo; echo
+    echo w
   else
-    echo t; echo 1; echo 83
+    # UEFI GPT
+    # Boot partition (EFI system)
+    echo n; echo; echo; echo "$boot_end"
+    echo t; echo 1; echo ef00
+    # Root partition
+    echo n; echo; echo; echo "$root_end"
+    # Home partition (rest)
+    echo n; echo; echo; echo
+    echo w
   fi
-  echo n; echo; echo; echo "$root_end"
-  echo n; echo; echo; echo
-  echo w
 } | fdisk "$install_disk"
 
+# === Partition naming for NVMe and others ===
 if [[ "$install_disk" == *"nvme"* ]]; then
-  boot="${install_disk}p1"
-  root="${install_disk}p2"
-  home="${install_disk}p3"
+  prefix="${install_disk}p"
 else
-  boot="${install_disk}1"
-  root="${install_disk}2"
-  home="${install_disk}3"
+  prefix="${install_disk}"
+fi
+
+if [ "$firmware" = "UEFI" ]; then
+  boot="${prefix}1"
+  root="${prefix}2"
+  home="${prefix}3"
+else
+  boot="${prefix}2"
+  root="${prefix}3"
+  home="${prefix}4"
 fi
 
 # === Format partitions ===
 echo "[+] Formatting partitions"
-[ "$firmware" = "UEFI" ] && mkfs.fat -F32 "$boot" || mkfs.ext4 "$boot"
+if [ "$firmware" = "UEFI" ]; then
+  mkfs.fat -F32 "$boot"
+else
+  mkfs.ext4 "$boot"
+fi
 mkfs.ext4 "$root"
 mkfs.ext4 "$home"
 
-# === Mounting ===
-echo "[+] Mounting"
+# === Mount partitions ===
+echo "[+] Mounting partitions"
 mount "$root" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot" /mnt/boot
@@ -129,7 +159,7 @@ ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
 hwclock --systohc
 sed -i '/^#en_US.UTF-8 UTF-8/s/^#//' /etc/locale.gen
 locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
+echo LANG=en_US.UTF-8 > /etc/locale.conf
 
 # Hostname
 echo "$hostname" > /etc/hostname
@@ -142,16 +172,18 @@ EOL
 # Sudoers
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# Set passwords
+# Set root password
 echo "root:$root_pass1" | chpasswd
+
+# Create user and set password
 useradd -m -G wheel "$username"
 echo "$username:$user_pass1" | chpasswd
 
-# Network
+# Install and enable NetworkManager
 pacman -S --noconfirm networkmanager networkmanager-runit
 ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
 
-# MAC randomization
+# MAC randomization config
 mkdir -p /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/00-macrandomize.conf <<EOL
 [device]
@@ -161,7 +193,7 @@ wifi.cloned-mac-address=stable
 ethernet.cloned-mac-address=stable
 EOL
 
-# Bootloader
+# Install GRUB bootloader
 if [ "$firmware" = "UEFI" ]; then
   pacman -S --noconfirm grub efibootmgr
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
@@ -169,15 +201,17 @@ else
   pacman -S --noconfirm grub
   grub-install --target=i386-pc "$install_disk"
 fi
+
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# Audio
+# Install ALSA for audio
 pacman -S --noconfirm alsa-utils alsa-utils-runit
 ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default
+
 EOF
 
-# === Install dwm, dmenu, st ===
-echo "[+] Installing suckless tools"
+# === Install suckless tools dwm, dmenu, st as user ===
+echo "[+] Installing suckless tools (dwm, dmenu, st) for user $username"
 runuser -u "$username" -- bash <<EOS
 cd ~
 mkdir -p .config && cd .config
@@ -189,6 +223,7 @@ for dir in dwm dmenu st; do
   make install
   cd ..
 done
+
 echo "exec dwm" > ~/.xinitrc
 
 cat > ~/.bash_profile <<EOF
@@ -198,4 +233,4 @@ fi
 EOF
 EOS
 
-echo "[✔] Installation complete! You can now 'reboot'."
+echo "[✔] Installation complete! Reboot now."
