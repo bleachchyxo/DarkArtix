@@ -1,114 +1,107 @@
 #!/bin/bash
 set -euo pipefail
 
-# === Root check ===
-if [ "$EUID" -ne 0 ]; then
-  echo "Run this script as root."
-  exit 1
-fi
+# --- Root Check ---
+[ "$EUID" -ne 0 ] && { echo "Run as root"; exit 1; }
 
-# === Helper functions ===
+# --- Ask and Confirm ---
 ask() {
-  read -rp "$1 [$2]: " input
-  echo "${input:-$2}"
+  local prompt="$1" default="$2" input
+  read -rp "$prompt [$default]: " input
+  echo "${input:-$default}"
 }
 
 confirm() {
-  response=$(ask "$1 (yes/no)" "no")
-  case "${response,,}" in
-    y|yes) return 0 ;;
-    *) echo "Aborted."; exit 1 ;;
-  esac
+  local ans
+  ans=$(ask "$1 (yes/no)" "no")
+  [[ "${ans,,}" == y || "${ans,,}" == yes ]] || { echo "Aborted."; exit 1; }
 }
 
-choose_timezone() {
-  echo "Available continents:"
-  continents=$(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d | xargs -n1 basename | sort)
-  echo "$continents"
+# --- Detect UEFI or BIOS ---
+[ -d /sys/firmware/efi ] && firmware="UEFI" || firmware="BIOS"
+echo "Detected firmware: $firmware"
 
-  continent=$(ask "Continent" "America")
-  continent=$(echo "$continents" | grep -iFx "$continent" || true)
-  [ -z "$continent" ] && echo "Invalid continent." && exit 1
-
-  echo "Available locations in $continent:"
-  cities=$(find "/usr/share/zoneinfo/$continent" -type f | sed "s|/usr/share/zoneinfo/$continent/||" | sort)
-  default_city=$(echo "$cities" | shuf -n1)
-
-  city=$(ask "City" "$default_city")
-  city=$(echo "$cities" | grep -iFx "$city" || true)
-  [ -z "$city" ] && echo "Invalid city." && exit 1
-
-  timezone="$continent/$city"
-  echo "Timezone set to: $timezone"
-}
-
-# === Detect firmware ===
-firmware="BIOS"
-[ -d /sys/firmware/efi ] && firmware="UEFI"
-echo "Firmware: $firmware"
-
-# === Disk selection ===
+# --- Disk Selection ---
 echo "Available disks:"
-lsblk -dn -o NAME,SIZE
-disk=$(ask "Install to disk (e.g. sda, nvme0n1)" "$(lsblk -dn -o NAME | head -n1)")
+lsblk -dno NAME,SIZE
+disk=$(ask "Install to disk (e.g. sda, nvme0n1)" "$(lsblk -dno NAME | head -n1)")
 disk="/dev/$disk"
 [ ! -b "$disk" ] && echo "Invalid disk: $disk" && exit 1
-
 confirm "Wipe $disk and install Artix?"
 
-# === Hostname, user, passwords ===
+# --- Hostname and User Setup ---
 hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
 echo "Set root password:"
 read -rsp "Password: " rootpass; echo
-read -rsp "Confirm: " rootpass2; echo
-[ "$rootpass" != "$rootpass2" ] && echo "Mismatch." && exit 1
+read -rsp "Confirm: " confirm; echo
+[[ "$rootpass" != "$confirm" ]] && { echo "Mismatch."; exit 1; }
 
-echo "Set user password:"
+echo "Set password for $username:"
 read -rsp "Password: " userpass; echo
-read -rsp "Confirm: " userpass2; echo
-[ "$userpass" != "$userpass2" ] && echo "Mismatch." && exit 1
+read -rsp "Confirm: " confirm; echo
+[[ "$userpass" != "$confirm" ]] && { echo "Mismatch."; exit 1; }
 
-# === Get disk size and calculate layout ===
-disk_size_mib=$(lsblk -b -dn -o SIZE "$disk")
-disk_size_mib=$((disk_size_mib / 1024 / 1024))
+# --- Timezone Selection ---
+select_timezone() {
+  while true; do
+    echo "Available continents:"
+    continents=($(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort))
+    printf '%s\n' "${continents[@]}"
+    continent=$(ask "Continent" "Europe")
+    continent=$(printf '%s\n' "${continents[@]}" | grep -iFx "$continent" || true)
+    [ -z "$continent" ] && { echo "Invalid. Try again."; continue; }
 
-if [ "$disk_size_mib" -ge 35840 ]; then
-  boot_end="+1G"
-  root_end="+30G"
-else
-  boot_end="+1G"
-  usable=$((disk_size_mib - 1024))
-  root_end="+$((usable * 70 / 100))M"
-fi
+    echo "Regions in $continent:"
+    regions=($(find "/usr/share/zoneinfo/$continent" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null))
+    if [ "${#regions[@]}" -gt 0 ]; then
+      region=$(ask "Region (e.g. Israel, Germany)" "${regions[0]}")
+      region=$(printf '%s\n' "${regions[@]}" | grep -iFx "$region" || true)
+      [ -z "$region" ] && { echo "Invalid. Try again."; continue; }
 
-# === Partition disk ===
+      cities=($(find "/usr/share/zoneinfo/$continent/$region" -type f -exec basename {} \;))
+      city=$(ask "City" "${cities[0]}")
+      city=$(printf '%s\n' "${cities[@]}" | grep -iFx "$city" || true)
+      [ -z "$city" ] && { echo "Invalid. Try again."; continue; }
+
+      timezone="$continent/$region/$city"
+    else
+      cities=($(find "/usr/share/zoneinfo/$continent" -type f -exec basename {} \;))
+      city=$(ask "City" "${cities[0]}")
+      city=$(printf '%s\n' "${cities[@]}" | grep -iFx "$city" || true)
+      [ -z "$city" ] && { echo "Invalid. Try again."; continue; }
+
+      timezone="$continent/$city"
+    fi
+
+    [ -f "/usr/share/zoneinfo/$timezone" ] && break || echo "Timezone not found. Try again."
+  done
+  echo "Selected timezone: $timezone"
+}
+select_timezone
+
+# --- Partitioning ---
 echo "Partitioning $disk..."
 wipefs -a "$disk"
 
 {
   echo g
-  echo n; echo 1; echo; echo "$boot_end"
-  echo n; echo 2; echo; echo "$root_end"
+  echo n; echo 1; echo; echo +1G
+  echo n; echo 2; echo; echo +30G
   echo n; echo 3; echo; echo
   echo w
 } | fdisk "$disk"
 
-# === Set partition names ===
-if [[ "$disk" == *"nvme"* ]]; then
-  boot="${disk}p1"
-  root="${disk}p2"
-  home="${disk}p3"
-else
-  boot="${disk}1"
-  root="${disk}2"
-  home="${disk}3"
-fi
+suffix=""
+[[ "$disk" =~ nvme ]] && suffix="p"
+boot="${disk}${suffix}1"
+root="${disk}${suffix}2"
+home="${disk}${suffix}3"
 
-# === Format partitions ===
-echo "Formatting partitions..."
-if [ "$firmware" = "UEFI" ]; then
+# --- Format Partitions ---
+echo "Formatting..."
+if [ "$firmware" == "UEFI" ]; then
   mkfs.fat -F32 "$boot"
 else
   mkfs.ext4 "$boot"
@@ -116,23 +109,20 @@ fi
 mkfs.ext4 "$root"
 mkfs.ext4 "$home"
 
-# === Mount filesystems ===
+# --- Mount Partitions ---
 mount "$root" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot" /mnt/boot
 mount "$home" /mnt/home
 
-# === Install base system ===
+# --- Install Base System ---
 basestrap /mnt base base-devel runit elogind-runit linux linux-firmware grub efibootmgr neovim
 
-# === Generate fstab ===
+# --- Generate FSTAB ---
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# === Select timezone ===
-choose_timezone
-
-# === Configure system ===
-artix-chroot /mnt /bin/bash -e <<EOF
+# --- Configure System in Chroot ---
+artix-chroot /mnt /bin/bash <<EOF
 ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
 hwclock --systohc
 
@@ -141,28 +131,22 @@ locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
 echo "$hostname" > /etc/hostname
-
-# Append 127.0.1.1 only
-grep -q "$hostname" /etc/hosts || echo "127.0.1.1   $hostname.localdomain $hostname" >> /etc/hosts
+echo "127.0.1.1 $hostname.localdomain $hostname" >> /etc/hosts
 
 echo "root:$rootpass" | chpasswd
 useradd -m -G wheel $username
 echo "$username:$userpass" | chpasswd
-
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# NetworkManager
-pacman -S --noconfirm networkmanager networkmanager-runit
+pacman -Sy --noconfirm networkmanager networkmanager-runit
 ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
 
-# GRUB
 if [ "$firmware" = "UEFI" ]; then
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
   grub-install --target=i386-pc "$disk"
 fi
-
 grub-mkconfig -o /boot/grub/grub.cfg
 EOF
 
-echo "Installation complete. You may reboot."
+echo "Installation complete. Reboot to enjoy your new Artix system."
