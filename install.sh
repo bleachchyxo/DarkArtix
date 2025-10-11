@@ -1,127 +1,111 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Root Check ---
-[ "$EUID" -ne 0 ] && { echo "Run as root"; exit 1; }
+# --- Root check ---
+if [[ $EUID -ne 0 ]]; then
+  echo "Please run as root."
+  exit 1
+fi
 
-# --- Ask and Confirm ---
+# --- Prompt helpers ---
 ask() {
-  local prompt="$1" default="$2" input
+  local prompt="$1"
+  local default="$2"
   read -rp "$prompt [$default]: " input
   echo "${input:-$default}"
 }
 
 confirm() {
-  local ans
-  ans=$(ask "$1 (yes/no)" "no")
-  [[ "${ans,,}" == y || "${ans,,}" == yes ]] || { echo "Aborted."; exit 1; }
+  local answer
+  answer=$(ask "$1 (yes/no)" "no")
+  [[ "${answer,,}" == "yes" || "${answer,,}" == "y" ]] || { echo "Aborted."; exit 1; }
 }
 
-# --- Detect UEFI or BIOS ---
-[ -d /sys/firmware/efi ] && firmware="UEFI" || firmware="BIOS"
-echo "Detected firmware: $firmware"
+# --- Detect firmware ---
+firmware="BIOS"
+if [ -d /sys/firmware/efi ]; then
+  firmware="UEFI"
+fi
+echo "Firmware detected: $firmware"
 
-# --- Disk Selection ---
+# --- Disk selection ---
 echo "Available disks:"
-lsblk -dno NAME,SIZE
-disk=$(ask "Install to disk (e.g. sda, nvme0n1)" "$(lsblk -dno NAME | head -n1)")
-disk="/dev/$disk"
-[ ! -b "$disk" ] && echo "Invalid disk: $disk" && exit 1
-confirm "Wipe $disk and install Artix?"
+lsblk -dno NAME,SIZE,TYPE | grep -w disk
+disk_name=$(ask "Disk to install to (e.g. sda, vda, nvme0n1)" "$(lsblk -dno NAME | head -n1)")
+disk="/dev/$disk_name"
 
-# --- Hostname and User Setup ---
+if [[ ! -b "$disk" ]]; then
+  echo "Invalid disk: $disk"
+  exit 1
+fi
+
+confirm "This will erase all data on $disk. Continue?"
+
+# --- Hostname and user ---
 hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
 echo "Set root password:"
-read -rsp "Password: " rootpass; echo
-read -rsp "Confirm: " confirm; echo
-[[ "$rootpass" != "$confirm" ]] && { echo "Mismatch."; exit 1; }
+read -rsp "Password: " root_password; echo
+read -rsp "Confirm: " confirm_password; echo
+[[ "$root_password" != "$confirm_password" ]] && { echo "Passwords do not match."; exit 1; }
 
 echo "Set password for $username:"
-read -rsp "Password: " userpass; echo
-read -rsp "Confirm: " confirm; echo
-[[ "$userpass" != "$confirm" ]] && { echo "Mismatch."; exit 1; }
+read -rsp "Password: " user_password; echo
+read -rsp "Confirm: " confirm_password; echo
+[[ "$user_password" != "$confirm_password" ]] && { echo "Passwords do not match."; exit 1; }
 
-# --- Timezone Selection ---
-select_timezone() {
-  while true; do
-    echo "Available continents:"
-    continents=($(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort))
-    printf '%s\n' "${continents[@]}"
-    continent=$(ask "Continent" "Europe")
-    continent=$(printf '%s\n' "${continents[@]}" | grep -iFx "$continent" || true)
-    [ -z "$continent" ] && { echo "Invalid. Try again."; continue; }
-
-    echo "Regions in $continent:"
-    regions=($(find "/usr/share/zoneinfo/$continent" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null))
-    if [ "${#regions[@]}" -gt 0 ]; then
-      region=$(ask "Region (e.g. Israel, Germany)" "${regions[0]}")
-      region=$(printf '%s\n' "${regions[@]}" | grep -iFx "$region" || true)
-      [ -z "$region" ] && { echo "Invalid. Try again."; continue; }
-
-      cities=($(find "/usr/share/zoneinfo/$continent/$region" -type f -exec basename {} \;))
-      city=$(ask "City" "${cities[0]}")
-      city=$(printf '%s\n' "${cities[@]}" | grep -iFx "$city" || true)
-      [ -z "$city" ] && { echo "Invalid. Try again."; continue; }
-
-      timezone="$continent/$region/$city"
-    else
-      cities=($(find "/usr/share/zoneinfo/$continent" -type f -exec basename {} \;))
-      city=$(ask "City" "${cities[0]}")
-      city=$(printf '%s\n' "${cities[@]}" | grep -iFx "$city" || true)
-      [ -z "$city" ] && { echo "Invalid. Try again."; continue; }
-
-      timezone="$continent/$city"
-    fi
-
-    [ -f "/usr/share/zoneinfo/$timezone" ] && break || echo "Timezone not found. Try again."
-  done
-  echo "Selected timezone: $timezone"
-}
-select_timezone
+# --- Timezone ---
+echo "Available continents:"
+find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
+continent=$(ask "Continent" "Europe")
+echo "Available cities in $continent:"
+find "/usr/share/zoneinfo/$continent" -type f -exec basename {} \; | sort
+city=$(ask "City" "Berlin")
+timezone="$continent/$city"
 
 # --- Partitioning ---
-echo "Partitioning $disk..."
+echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
 {
   echo g
-  echo n; echo 1; echo; echo +1G
-  echo n; echo 2; echo; echo +30G
-  echo n; echo 3; echo; echo
+  echo n; echo 1; echo; echo +512M
+  echo t; echo 1
+  echo n; echo 2; echo; echo
   echo w
 } | fdisk "$disk"
 
-suffix=""
-[[ "$disk" =~ nvme ]] && suffix="p"
-boot="${disk}${suffix}1"
-root="${disk}${suffix}2"
-home="${disk}${suffix}3"
+part_prefix=""
+[[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
 
-# --- Format Partitions ---
-echo "Formatting..."
-if [ "$firmware" == "UEFI" ]; then
-  mkfs.fat -F32 "$boot"
+boot_partition="${disk}${part_prefix}1"
+root_partition="${disk}${part_prefix}2"
+
+echo "Waiting for partitions to be available..."
+for part in "$boot_partition" "$root_partition"; do
+  while [ ! -b "$part" ]; do sleep 0.5; done
+done
+
+# --- Formatting ---
+if [[ "$firmware" == "UEFI" ]]; then
+  mkfs.fat -F32 "$boot_partition"
 else
-  mkfs.ext4 "$boot"
+  mkfs.ext4 "$boot_partition"
 fi
-mkfs.ext4 "$root"
-mkfs.ext4 "$home"
+mkfs.ext4 "$root_partition"
 
-# --- Mount Partitions ---
-mount "$root" /mnt
-mkdir -p /mnt/boot /mnt/home
-mount "$boot" /mnt/boot
-mount "$home" /mnt/home
+# --- Mounting ---
+mount "$root_partition" /mnt
+mkdir -p /mnt/boot
+mount "$boot_partition" /mnt/boot
 
-# --- Install Base System ---
+# --- Base system installation ---
 basestrap /mnt base base-devel runit elogind-runit linux linux-firmware grub efibootmgr neovim
 
-# --- Generate FSTAB ---
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# --- Configure System in Chroot ---
+# --- System configuration ---
 artix-chroot /mnt /bin/bash <<EOF
 ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
 hwclock --systohc
@@ -130,23 +114,24 @@ sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-echo "$hostname" > /etc/hostname
 echo "127.0.1.1 $hostname.localdomain $hostname" >> /etc/hosts
 
-echo "root:$rootpass" | chpasswd
+echo "root:$root_password" | chpasswd
 useradd -m -G wheel $username
-echo "$username:$userpass" | chpasswd
+echo "$username:$user_password" | chpasswd
+
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-pacman -Sy --noconfirm networkmanager networkmanager-runit
-ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
+ln -s /etc/runit/sv/sshd /etc/runit/runsvdir/default 2>/dev/null || true
 
-if [ "$firmware" = "UEFI" ]; then
+if [[ "$firmware" == "UEFI" ]]; then
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
   grub-install --target=i386-pc "$disk"
 fi
+
 grub-mkconfig -o /boot/grub/grub.cfg
 EOF
 
-echo "Installation complete. Reboot to enjoy your new Artix system."
+echo "Installation complete. Please reboot."
+
