@@ -16,8 +16,12 @@ ask() {
 }
 
 confirm() {
-  local answer
-  answer=$(ask "$1 (yes/no)" "no")
+  local prompt="$1"
+  local default="${2:-no}"
+  local yn_format
+  [[ "${default,,}" == "yes" || "${default,,}" == "y" ]] && yn_format="[Y/n]" || yn_format="[y/N]"
+  read -rp "$prompt $yn_format: " answer
+  answer="${answer:-$default}"
   [[ "${answer,,}" == "yes" || "${answer,,}" == "y" ]] || { echo "Aborted."; exit 1; }
 }
 
@@ -39,7 +43,7 @@ if [[ ! -b "$disk" ]]; then
   exit 1
 fi
 
-confirm "This will erase all data on $disk. Continue?"
+confirm "This will erase all data on $disk. Continue?" "no"
 
 # --- Hostname and user ---
 hostname=$(ask "Hostname" "artix")
@@ -70,9 +74,9 @@ wipefs -a "$disk"
 
 {
   echo g
-  echo n; echo 1; echo; echo +512M
-  echo t; echo 1
-  echo n; echo 2; echo; echo
+  echo n; echo 1; echo; echo +512M      # /boot
+  echo n; echo 2; echo; echo +30G       # /
+  echo n; echo 3; echo; echo            # /home
   echo w
 } | fdisk "$disk"
 
@@ -81,9 +85,10 @@ part_prefix=""
 
 boot_partition="${disk}${part_prefix}1"
 root_partition="${disk}${part_prefix}2"
+home_partition="${disk}${part_prefix}3"
 
 echo "Waiting for partitions to be available..."
-for part in "$boot_partition" "$root_partition"; do
+for part in "$boot_partition" "$root_partition" "$home_partition"; do
   while [ ! -b "$part" ]; do sleep 0.5; done
 done
 
@@ -94,14 +99,20 @@ else
   mkfs.ext4 "$boot_partition"
 fi
 mkfs.ext4 "$root_partition"
+mkfs.ext4 "$home_partition"
 
 # --- Mounting ---
 mount "$root_partition" /mnt
-mkdir -p /mnt/boot
+mkdir -p /mnt/boot /mnt/home
 mount "$boot_partition" /mnt/boot
+mount "$home_partition" /mnt/home
 
 # --- Base system installation ---
-basestrap /mnt base base-devel runit elogind-runit linux linux-firmware grub efibootmgr neovim
+if [[ "$firmware" == "UEFI" ]]; then
+  basestrap /mnt base base-devel runit elogind-runit linux linux-firmware grub efibootmgr neovim networkmanager networkmanager-runit
+else
+  basestrap /mnt base base-devel runit elogind-runit linux linux-firmware grub neovim networkmanager networkmanager-runit
+fi
 
 fstabgen -U /mnt > /mnt/etc/fstab
 
@@ -114,6 +125,8 @@ sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
+echo "$hostname" > /etc/hostname
+echo "127.0.0.1 localhost" > /etc/hosts
 echo "127.0.1.1 $hostname.localdomain $hostname" >> /etc/hosts
 
 echo "root:$root_password" | chpasswd
@@ -122,7 +135,7 @@ echo "$username:$user_password" | chpasswd
 
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-ln -s /etc/runit/sv/sshd /etc/runit/runsvdir/default 2>/dev/null || true
+ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
 
 if [[ "$firmware" == "UEFI" ]]; then
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
@@ -134,4 +147,3 @@ grub-mkconfig -o /boot/grub/grub.cfg
 EOF
 
 echo "Installation complete. Please reboot."
-
