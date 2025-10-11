@@ -1,62 +1,77 @@
+#!/bin/bash
+set -euo pipefail
 
-    pacman -Syyu
+# --- Check for root ---
+if [[ $EUID -eq 0 ]]; then
+  echo "Please run this script as a regular user, not root."
+  exit 1
+fi
 
-Install the `gcc` compiler
+# --- Update system ---
+echo "Updating system..."
+sudo pacman -Syyu --noconfirm
 
-    pacman -S gcc
+# --- Install compiler and dependencies ---
+echo "Installing gcc and important libraries..."
+sudo pacman -S --noconfirm gcc libx11 libxinerama libxft git xorg xorg-xinit ttf-dejavu ttf-font-awesome alsa-utils alsa-utils-runit
 
-Now we proceed to install important packages;
+# --- Create config directory ---
+CONFIG_DIR="$HOME/.config"
+mkdir -p "$CONFIG_DIR"
+cd "$CONFIG_DIR"
 
-    libx11 libxinerama libxft git
+# --- Clone suckless repos ---
+echo "Cloning suckless repositories..."
+for repo in dwm dmenu st; do
+  if [ -d "$repo" ]; then
+    echo "$repo already exists, skipping clone."
+  else
+    git clone "https://git.suckless.org/$repo"
+  fi
+done
 
-## Installing and compiling suckless
+# --- Patch dwm config.def.h ---
+DWM_CONFIG="$CONFIG_DIR/dwm/config.def.h"
+if grep -q 'Mod1Mask' "$DWM_CONFIG"; then
+  echo "Patching dwm config.def.h to change MODKEY to Mod4Mask..."
+  sed -i 's/#define MODKEY Mod1Mask/#define MODKEY Mod4Mask/' "$DWM_CONFIG"
+else
+  echo "dwm config.def.h already patched or MODKEY not found."
+fi
 
-On your `/home/user` shouln't be any directoy yet, maybe just a couple of hidden files you can see by typing `ls -a` like `.bashrc` but nothing relevant. If so, all linux distros have a hidden config folder on this path, so we must create it
+# --- Compile and install suckless tools ---
+for tool in dwm dmenu st; do
+  echo "Building and installing $tool..."
+  (cd "$CONFIG_DIR/$tool" && make clean && sudo make install)
+done
 
-    mkdir .config
+# --- Setup ~/.xinitrc ---
+XINITRC="$HOME/.xinitrc"
+if ! grep -q '^exec dwm' "$XINITRC" 2>/dev/null; then
+  echo "Adding 'exec dwm' to $XINITRC..."
+  echo "exec dwm" >> "$XINITRC"
+else
+  echo "$XINITRC already configured."
+fi
 
-Now you `cd` on this new directoy, here we will store all our config files from most of our programs.
+# --- Enable ALSA service ---
+echo "Enabling ALSA service with runit..."
+if [ ! -L /etc/runit/runsvdir/default/alsa ]; then
+  sudo ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default/
+else
+  echo "ALSA service link already exists."
+fi
 
-    git clone https://git.suckless.org/dwm 
+# --- Setup ~/.bash_profile to start X on tty1 ---
+BASH_PROFILE="$HOME/.bash_profile"
+STARTX_SNIPPET=$'if [[ -z $DISPLAY ]] && [[ $(tty) == /dev/tty1 ]]; then\n  startx\nfi\n'
 
-inside `/dwm` theres a file `config.def.h` edit the file with a code inside. you need to find the following line and edit;
+if ! grep -q 'startx' "$BASH_PROFILE" 2>/dev/null; then
+  echo "Adding automatic startx to $BASH_PROFILE..."
+  echo -e "$STARTX_SNIPPET" >> "$BASH_PROFILE"
+else
+  echo "$BASH_PROFILE already contains startx snippet."
+fi
 
-     #define MODKEY Mod1Mask
-
-change the number `1` for a `4`; 
-
-      #define MODKEY Mod4Mask
-      
-then continue downloading the rest
-
-    git clone https://git.suckless.org/dmenu 
-    git clone https://git.suckless.org/st
-
-Next thing is to `cd` into each generated directories and do the following;
-
-    make install
-
-Once you finished compiling those three folders want to exit from the `.config` folder and create the starting file;
-
-    cd
-    echo "exec dwm" >> ~/.xinitrc
-
-### Installing the last packages
-
-    pacman -S xorg xorg-xinit ttf-dejavu ttf-font-awesome alsa-utils alsa-utils-runit 
-
-### Making ALSA service start after rebooting
-
-    ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default/
-
-### Initiating suckless by default
-
-    vim ~/.bash_profile
-
-Paste the following script inside the file;
-
-    if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
-        startx
-    fi
-
-Now reboot and enjoy!
+echo
+echo "Setup complete! Reboot or log out and log in on tty1 to start dwm."
