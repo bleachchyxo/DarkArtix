@@ -192,7 +192,7 @@ locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
 echo "$hostname" > /etc/hostname
-echo -e "127.0.1.1\t$hostname.localdomain $hostname" >> /etc/hosts
+echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
 
 useradd -m -G wheel "$username"
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
