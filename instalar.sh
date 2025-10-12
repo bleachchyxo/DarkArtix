@@ -1,13 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Root check ---
+# Root check
 if [[ $EUID -ne 0 ]]; then
   echo "Please run as root."
   exit 1
 fi
 
-# --- Prompt helpers ---
+# Prompt helpers
 ask() {
   local prompt="$1"
   local default="$2"
@@ -25,23 +25,22 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-# --- Detect firmware ---
+# Detect firmware
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
 fi
 echo "Firmware detected: $firmware"
 
-# --- List available disks ---
+# List available disks
 echo "Available disks:"
 mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /^(loop|ram)/ {print $1, $2}')
 for disk_entry in "${disks[@]}"; do
-  echo "$disk_entry"
+  echo "  $disk_entry"
 done
 
-# --- Disk selection ---
 default_disk="${disks[0]%% *}"
-disk_name=$(ask "Disk to install to (choose one of: ${disks[*]%% *})" "$default_disk")
+disk_name=$(ask "Choose a disk to install" "$default_disk")
 disk="/dev/$disk_name"
 if [[ ! -b "$disk" ]]; then
   echo "Invalid disk: $disk"
@@ -49,16 +48,17 @@ if [[ ! -b "$disk" ]]; then
 fi
 confirm "This will erase all data on $disk. Continue?" "no"
 
-# --- Hostname and username ---
+# Hostname and username
 hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
-# --- Timezone selection ---
+# Timezone selection
 while true; do
   echo "Available continents:"
   mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
   for c in "${continents[@]}"; do echo "  $c"; done
-  continent_input=$(ask "Continent" "Europe")
+
+  continent_input=$(ask "Continent" "America")
   continent=$(echo "$continent_input" | awk '{print tolower($0)}')
   continent_matched=""
   for c in "${continents[@]}"; do
@@ -74,8 +74,12 @@ while true; do
 
   echo "Available cities in $continent_matched:"
   mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
+
+  # Pick a random default city
+  default_city="${cities[RANDOM % ${#cities[@]}]}"
   for city in "${cities[@]}"; do echo "  $city"; done
-  city_input=$(ask "City" "Berlin")
+
+  city_input=$(ask "City" "$default_city")
   city=$(echo "$city_input" | awk '{print tolower($0)}')
   city_matched=""
   for c in "${cities[@]}"; do
@@ -92,7 +96,7 @@ while true; do
   break
 done
 
-# --- Partition sizing ---
+# Partition sizing
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
@@ -105,23 +109,23 @@ fi
 echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
-# --- Partitioning using fdisk ---
+# Partitioning using fdisk
 if [[ "$firmware" == "UEFI" ]]; then
-  table_type="g"  # GPT
+  table_type="g"
 else
-  table_type="o"  # MBR
+  table_type="o"
 fi
 
 {
-  echo "$table_type"                   # g for GPT, o for MBR
-  echo n; echo 1; echo; echo +512M     # /boot
-  echo n; echo 2; echo; echo "$root_size"  # /
-  echo n; echo 3; echo; echo           # /home (rest of disk)
-  [[ "$firmware" == "BIOS" ]] && echo a && echo 1  # Set boot flag on /boot for BIOS
+  echo "$table_type"
+  echo n; echo 1; echo; echo +512M
+  echo n; echo 2; echo; echo "$root_size"
+  echo n; echo 3; echo; echo
+  [[ "$firmware" == "BIOS" ]] && echo a && echo 1
   echo w
 } | fdisk "$disk"
 
-# --- Partition device names ---
+# Partition device names
 part_prefix=""
 [[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
 
@@ -134,7 +138,7 @@ for p in "$boot_partition" "$root_partition" "$home_partition"; do
   while [ ! -b "$p" ]; do sleep 0.5; done
 done
 
-# --- Format partitions ---
+# Format partitions
 if [[ "$firmware" == "UEFI" ]]; then
   mkfs.fat -F32 "$boot_partition"
 else
@@ -143,27 +147,26 @@ fi
 mkfs.ext4 "$root_partition"
 mkfs.ext4 "$home_partition"
 
-# --- Mount partitions ---
+# Mount partitions
 mount "$root_partition" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot_partition" /mnt/boot
 mount "$home_partition" /mnt/home
 
-# Bind mount for chroot
+# Bind mount system dirs
 for dir in dev proc sys run; do
+  mkdir -p "/mnt/$dir"
   mount --bind "/$dir" "/mnt/$dir"
 done
 
-# --- Install base system ---
+# Install base system
 base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
-if [[ "$firmware" == "UEFI" ]]; then
-  base_packages+=(efibootmgr)
-fi
+[[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
 
 basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# --- Securely prompt passwords ---
+# Prompt for root password
 echo "Set root password:"
 while true; do
   read -s -p "Root password: " rootpass1; echo
@@ -171,6 +174,7 @@ while true; do
   [[ "$rootpass1" == "$rootpass2" && -n "$rootpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
 done
 
+# Prompt for user password
 echo "Set password for user '$username':"
 while true; do
   read -s -p "User password: " userpass1; echo
@@ -178,7 +182,7 @@ while true; do
   [[ "$userpass1" == "$userpass2" && -n "$userpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
 done
 
-# --- Configure system inside chroot ---
+# Configure system in chroot
 artix-chroot /mnt /bin/bash <<EOF
 ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
 hwclock --systohc
@@ -188,7 +192,7 @@ locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
 echo "$hostname" > /etc/hostname
-echo "127.0.1.1 $hostname.localdomain $hostname" >> /etc/hosts
+echo -e "127.0.1.1\t$hostname.localdomain $hostname" >> /etc/hosts
 
 useradd -m -G wheel "$username"
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
@@ -207,13 +211,13 @@ echo "root:$rootpass1" | chpasswd
 echo "$username:$userpass1" | chpasswd
 EOF
 
-# --- Cleanup ---
+# Cleanup sensitive variables
 unset rootpass1 rootpass2 userpass1 userpass2
 
+# Unmount system dirs
 for dir in dev proc sys run; do
   umount -l "/mnt/$dir"
 done
 
 echo
 echo "Installation complete. Please reboot and remove the installation media."
-
