@@ -1,76 +1,60 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Check for root ---
-if [[ $EUID -eq 0 ]]; then
-  echo "Please run this script as a regular user, not root."
-  exit 1
-fi
+echo "Updating package list and system..."
+pacman -Syyu --noconfirm
 
-# --- Update system ---
-echo "Updating system..."
-sudo pacman -Syyu --noconfirm
+echo "Installing required packages..."
+pacman -S --noconfirm gcc make git libx11 libxinerama libxft xorg xorg-xinit ttf-dejavu ttf-font-awesome alsa-utils-runit
 
-# --- Install compiler and dependencies ---
-echo "Installing gcc and important libraries..."
-sudo pacman -S --noconfirm gcc libx11 libxinerama libxft git xorg xorg-xinit ttf-dejavu ttf-font-awesome alsa-utils alsa-utils-runit
+echo "Creating configuration directory at /home/$SUDO_USER/.config..."
+config_directory="/home/$SUDO_USER/.config"
+mkdir -p "$config_directory"
+cd "$config_directory"
 
-# --- Create config directory ---
-CONFIG_DIR="$HOME/.config"
-mkdir -p "$CONFIG_DIR"
-cd "$CONFIG_DIR"
-
-# --- Clone suckless repos ---
-echo "Cloning suckless repositories..."
-for repo in dwm dmenu st; do
-  if [ -d "$repo" ]; then
-    echo "$repo already exists, skipping clone."
+for repository in dwm dmenu st; do
+  if [ ! -d "$repository" ]; then
+    echo "Cloning $repository..."
+    git clone "https://git.suckless.org/$repository"
   else
-    git clone "https://git.suckless.org/$repo"
+    echo "$repository already cloned, skipping."
   fi
 done
 
-# --- Patch dwm config.def.h ---
-DWM_CONFIG="$CONFIG_DIR/dwm/config.def.h"
-if grep -q 'Mod1Mask' "$DWM_CONFIG"; then
-  echo "Patching dwm config.def.h to change MODKEY to Mod4Mask..."
-  sed -i 's/#define MODKEY Mod1Mask/#define MODKEY Mod4Mask/' "$DWM_CONFIG"
-else
-  echo "dwm config.def.h already patched or MODKEY not found."
+dwm_config="${config_directory}/dwm/config.def.h"
+if grep -q '#define MODKEY Mod1Mask' "$dwm_config"; then
+  echo "Patching dwm to use Mod4 (Super) as MODKEY..."
+  sed -i 's/#define MODKEY Mod1Mask/#define MODKEY Mod4Mask/' "$dwm_config"
+  rm -f "${config_directory}/dwm/config.h"
 fi
 
-# --- Compile and install suckless tools ---
-for tool in dwm dmenu st; do
-  echo "Building and installing $tool..."
-  (cd "$CONFIG_DIR/$tool" && make clean && sudo make install)
+for program in dwm dmenu st; do
+  echo "Building and installing $program..."
+  make -C "${config_directory}/${program}" clean
+  make -C "${config_directory}/${program}" install
 done
 
-# --- Setup ~/.xinitrc ---
-XINITRC="$HOME/.xinitrc"
-if ! grep -q '^exec dwm' "$XINITRC" 2>/dev/null; then
-  echo "Adding 'exec dwm' to $XINITRC..."
-  echo "exec dwm" >> "$XINITRC"
-else
-  echo "$XINITRC already configured."
-fi
+xinitrc_path="/home/$SUDO_USER/.xinitrc"
+echo "Creating .xinitrc to launch dwm..."
+echo "exec dwm" > "$xinitrc_path"
+chown "$SUDO_USER:$SUDO_USER" "$xinitrc_path"
 
-# --- Enable ALSA service ---
-echo "Enabling ALSA service with runit..."
-if [ ! -L /etc/runit/runsvdir/default/alsa ]; then
-  sudo ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default/
-else
-  echo "ALSA service link already exists."
-fi
-
-# --- Setup ~/.bash_profile to start X on tty1 (overwrite!) ---
-BASH_PROFILE="$HOME/.bash_profile"
-echo "Writing ~/.bash_profile to auto start X on tty1..."
-cat > "$BASH_PROFILE" <<'EOF'
+bash_profile_path="/home/$SUDO_USER/.bash_profile"
+echo "Creating .bash_profile to auto-start X on tty1..."
+cat > "$bash_profile_path" <<'EOF'
 if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
     startx
 fi
 EOF
+chown "$SUDO_USER:$SUDO_USER" "$bash_profile_path"
+
+alsa_service_link="/etc/runit/runsvdir/default/alsa"
+if [ ! -L "$alsa_service_link" ]; then
+  echo "Enabling ALSA service with runit..."
+  ln -s /etc/runit/sv/alsa "$alsa_service_link"
+fi
 
 echo
-echo "Setup complete! Reboot or log out and log in on tty1 to start dwm."
+echo "Suckless environment setup complete. Log in on tty1 to start dwm."
+
 
