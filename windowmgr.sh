@@ -62,16 +62,15 @@ else
   echo "ALSA service link already exists."
 fi
 
-# --- Setup ~/.bash_profile to start X on tty1 ---
+# --- Setup ~/.bash_profile to start X on tty1 (overwrite!) ---
 BASH_PROFILE="$HOME/.bash_profile"
-STARTX_SNIPPET=$'if [[ -z $DISPLAY ]] && [[ $(tty) == /dev/tty1 ]]; then\n  startx\nfi\n'
-
-if ! grep -q 'startx' "$BASH_PROFILE" 2>/dev/null; then
-  echo "Adding automatic startx to $BASH_PROFILE..."
-  echo -e "$STARTX_SNIPPET" >> "$BASH_PROFILE"
-else
-  echo "$BASH_PROFILE already contains startx snippet."
+echo "Writing ~/.bash_profile to auto start X on tty1..."
+cat > "$BASH_PROFILE" <<'EOF'
+if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
+    startx
 fi
+EOF
 
 echo
 echo "Setup complete! Reboot or log out and log in on tty1 to start dwm."
+
