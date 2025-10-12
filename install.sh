@@ -53,14 +53,13 @@ confirm "This will erase all data on $disk. Continue?" "no"
 hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
-# --- Timezone selection with case-insensitive retry ---
+# --- Timezone selection ---
 while true; do
   echo "Available continents:"
   mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
   for c in "${continents[@]}"; do echo "  $c"; done
   continent_input=$(ask "Continent" "Europe")
   continent=$(echo "$continent_input" | awk '{print tolower($0)}')
-  # Match ignoring case
   continent_matched=""
   for c in "${continents[@]}"; do
     if [[ "${c,,}" == "$continent" ]]; then
@@ -78,7 +77,6 @@ while true; do
   for city in "${cities[@]}"; do echo "  $city"; done
   city_input=$(ask "City" "Berlin")
   city=$(echo "$city_input" | awk '{print tolower($0)}')
-
   city_matched=""
   for c in "${cities[@]}"; do
     if [[ "${c,,}" == "$city" ]]; then
@@ -90,7 +88,6 @@ while true; do
     echo "Invalid city '$city_input'. Please try again."
     continue
   fi
-
   timezone="$continent_matched/$city_matched"
   break
 done
@@ -99,7 +96,6 @@ done
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
-# Use smaller root partition if disk is small (<40GB)
 if (( disk_size_gb < 40 )); then
   root_size="+10G"
 else
@@ -109,28 +105,25 @@ fi
 echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
-# Partitioning with fdisk (GPT always for UEFI, MBR for BIOS)
+# --- Partitioning using fdisk ---
 if [[ "$firmware" == "UEFI" ]]; then
-  parted -s "$disk" mklabel gpt
+  table_type="g"  # GPT
 else
-  parted -s "$disk" mklabel msdos
+  table_type="o"  # MBR
 fi
 
-# Create partitions
+{
+  echo "$table_type"                   # g for GPT, o for MBR
+  echo n; echo 1; echo; echo +512M     # /boot
+  echo n; echo 2; echo; echo "$root_size"  # /
+  echo n; echo 3; echo; echo           # /home (rest of disk)
+  [[ "$firmware" == "BIOS" ]] && echo a && echo 1  # Set boot flag on /boot for BIOS
+  echo w
+} | fdisk "$disk"
+
+# --- Partition device names ---
 part_prefix=""
 [[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
-
-if [[ "$firmware" == "UEFI" ]]; then
-  parted -s "$disk" mkpart primary fat32 1MiB 513MiB
-  parted -s "$disk" set 1 boot on
-  parted -s "$disk" mkpart primary ext4 513MiB $root_size
-  parted -s "$disk" mkpart primary ext4 "$root_size" 100%
-else
-  parted -s "$disk" mkpart primary ext4 1MiB 513MiB
-  parted -s "$disk" set 1 boot on
-  parted -s "$disk" mkpart primary ext4 513MiB $root_size
-  parted -s "$disk" mkpart primary ext4 "$root_size" 100%
-fi
 
 boot_partition="${disk}${part_prefix}1"
 root_partition="${disk}${part_prefix}2"
@@ -156,8 +149,9 @@ mkdir -p /mnt/boot /mnt/home
 mount "$boot_partition" /mnt/boot
 mount "$home_partition" /mnt/home
 
-# Bind mount for chroot
+# --- Fixed: Ensure mount points exist before bind mounting ---
 for dir in dev proc sys run; do
+  mkdir -p "/mnt/$dir"
   mount --bind "/$dir" "/mnt/$dir"
 done
 
@@ -168,7 +162,6 @@ if [[ "$firmware" == "UEFI" ]]; then
 fi
 
 basestrap /mnt "${base_packages[@]}"
-
 fstabgen -U /mnt > /mnt/etc/fstab
 
 # --- Securely prompt passwords ---
