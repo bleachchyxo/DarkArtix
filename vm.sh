@@ -95,16 +95,27 @@ while true; do
   break
 done
 
-# Partition sizing
-boot_size="+512M"
-disk_size_bytes=$(blockdev --getsize64 "$disk")
-disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
+# Partition sizing logic
+boot_size_mib=512
+min_root_size_mib=10240   # 10 GiB minimum root partition
+buffer_mib=1024           # 1 GiB buffer for /home
 
-if (( disk_size_gb < 40 )); then
-  root_size="+15G"
-else
-  root_size="+30G"
+disk_size_bytes=$(blockdev --getsize64 "$disk")
+disk_size_mib=$(( disk_size_bytes / 1024 / 1024 ))
+
+if (( disk_size_mib < boot_size_mib + min_root_size_mib + buffer_mib )); then
+  echo "Disk too small for installation (need at least $((boot_size_mib + min_root_size_mib + buffer_mib)) MiB)."
+  exit 1
 fi
+
+root_size_mib=$(( disk_size_mib - boot_size_mib - buffer_mib ))
+boot_size="+${boot_size_mib}M"
+root_size="+${root_size_mib}M"
+
+echo "Partition sizes:"
+echo "  /boot: $boot_size (512MiB)"
+echo "  /    : $root_size (~${root_size_mib}MiB)"
+echo "  /home : remaining space (~${buffer_mib}MiB buffer reserved)"
 
 echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
@@ -221,4 +232,3 @@ done
 
 echo
 echo "Installation complete. Please reboot and remove the installation media."
-
