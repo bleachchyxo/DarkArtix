@@ -75,6 +75,7 @@ while true; do
   echo "Available cities in $continent_matched:"
   mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
 
+  # Pick a random default city
   default_city="${cities[RANDOM % ${#cities[@]}]}"
   for city in "${cities[@]}"; do echo "  $city"; done
 
@@ -95,44 +96,77 @@ while true; do
   break
 done
 
-# Partition sizing logic
+# Calculate partition sizes in sectors
+sector_size=$(blockdev --getss "$disk")
+total_sectors=$(blockdev --getsz "$disk")
+
 boot_size_mib=512
-min_root_size_mib=10240   # 10 GiB minimum root partition
-buffer_mib=1024           # 1 GiB buffer for /home
+boot_size_sectors=$(( boot_size_mib * 1024 * 1024 / sector_size ))
 
-disk_size_bytes=$(blockdev --getsize64 "$disk")
-disk_size_mib=$(( disk_size_bytes / 1024 / 1024 ))
+remaining_sectors=$(( total_sectors - boot_size_sectors ))
 
-if (( disk_size_mib < boot_size_mib + min_root_size_mib + buffer_mib )); then
-  echo "Disk too small for installation (need at least $((boot_size_mib + min_root_size_mib + buffer_mib)) MiB)."
-  exit 1
+# Split remaining sectors: 75% root, 25% home
+root_size_sectors=$(( remaining_sectors * 75 / 100 ))
+home_size_sectors=$(( remaining_sectors - root_size_sectors ))
+
+# Partition start and end sectors (start at sector 2048 for alignment)
+part1_start=2048
+part1_end=$(( part1_start + boot_size_sectors - 1 ))
+
+part2_start=$(( part1_end + 1 ))
+part2_end=$(( part2_start + root_size_sectors - 1 ))
+
+part3_start=$(( part2_end + 1 ))
+part3_end=$(( part3_start + home_size_sectors - 1 ))
+
+# Safety check to not exceed disk size
+if (( part3_end > total_sectors )); then
+  part3_end=$(( total_sectors - 1 ))
 fi
 
-root_size_mib=$(( disk_size_mib - boot_size_mib - buffer_mib ))
-boot_size="+${boot_size_mib}M"
-root_size="+${root_size_mib}M"
-
-echo "Partition sizes:"
-echo "  /boot: $boot_size (512MiB)"
-echo "  /    : $root_size (~${root_size_mib}MiB)"
-echo "  /home : remaining space (~${buffer_mib}MiB buffer reserved)"
+echo "Partition layout:"
+echo "/boot   : sectors $part1_start - $part1_end (~$boot_size_mib MiB)"
+echo "/       : sectors $part2_start - $part2_end (~$((root_size_sectors * sector_size / 1024 / 1024)) MiB)"
+echo "/home   : sectors $part3_start - $part3_end (~$((home_size_sectors * sector_size / 1024 / 1024)) MiB)"
 
 echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
 # Partitioning using fdisk
-if [[ "$firmware" == "UEFI" ]]; then
-  table_type="g"
-else
-  table_type="o"
-fi
-
 {
-  echo "$table_type"
-  echo n; echo 1; echo; echo "$boot_size"
-  echo n; echo 2; echo; echo "$root_size"
-  echo n; echo 3; echo; echo
-  [[ "$firmware" == "BIOS" ]] && echo a && echo 1
+  if [[ "$firmware" == "UEFI" ]]; then
+    echo g
+  else
+    echo o
+  fi
+
+  # /boot
+  echo n
+  echo p
+  echo 1
+  echo $part1_start
+  echo $part1_end
+
+  # /
+  echo n
+  echo p
+  echo 2
+  echo $part2_start
+  echo $part2_end
+
+  # /home
+  echo n
+  echo p
+  echo 3
+  echo $part3_start
+  echo $part3_end
+
+  # Mark bootable if BIOS
+  if [[ "$firmware" == "BIOS" ]]; then
+    echo a
+    echo 1
+  fi
+
   echo w
 } | fdisk "$disk"
 
