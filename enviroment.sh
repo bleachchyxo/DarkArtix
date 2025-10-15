@@ -7,97 +7,103 @@ if [[ -z "${SUDO_USER:-}" ]]; then
   exit 1
 fi
 
-USER_HOME="/home/$SUDO_USER"
-CONFIG_DIR="$USER_HOME/.config"
-XINITRC_PATH="$USER_HOME/.xinitrc"
-BASH_PROFILE_PATH="$USER_HOME/.bash_profile"
-ALSA_SERVICE_LINK="/etc/runit/runsvdir/default/alsa"
+user_home="/home/$SUDO_USER"
+config_path="$user_home/.config"
+xinitrc_file="$user_home/.xinitrc"
+bash_profile_file="$user_home/.bash_profile"
+alsa_service="/etc/runit/runsvdir/default/alsa"
 
-echo "Updating package list and system..."
+echo "Updating package list and upgrading system..."
 pacman -Syyu --noconfirm
 
-echo "Installing required packages..."
-pacman -S --noconfirm gcc make git libx11 libxinerama libxft xorg xorg-xinit ttf-dejavu ttf-font-awesome alsa-utils-runit xcompmgr
+echo "Installing essential packages..."
+pacman -S --noconfirm \
+  gcc make git \
+  libx11 libxinerama libxft \
+  xorg xorg-xinit \
+  ttf-dejavu ttf-font-awesome alsa-utils-runit xcompmgr
 
-mkdir -p "$CONFIG_DIR"
-cd "$CONFIG_DIR"
+mkdir -p "$config_path"
+cd "$config_path"
 
-# Clone repos if missing
-for repo in dwm dmenu st; do
-  if [[ ! -d "$repo" ]]; then
-    echo "Cloning $repo..."
-    git clone "https://git.suckless.org/$repo"
+# Clone suckless repositories
+for project in dwm dmenu st; do
+  if [[ ! -d "$project" ]]; then
+    echo "Cloning $project..."
+    git clone "https://git.suckless.org/$project"
   else
-    echo "$repo already cloned, skipping."
+    echo "$project already exists. Skipping clone."
   fi
 done
 
-# Fix ownership so user can edit everything
-echo "Setting ownership of $CONFIG_DIR to $SUDO_USER..."
-chown -R "$SUDO_USER:$SUDO_USER" "$CONFIG_DIR"
+# === DWM PATCHING ===
+cd "$config_path/dwm"
 
-# === PATCH ST ===
-cd st
+echo "Patching dwm: fullgaps..."
+curl -LO https://dwm.suckless.org/patches/fullgaps/dwm-fullgaps-20200508-7b77734.diff
+patch < dwm-fullgaps-20200508-7b77734.diff
+rm -f config.def.h.orig dwm.c.orig dwm-fullgaps-20200508-7b77734.diff config.h
 
-# Download and apply alpha patch
-echo "Applying st alpha patch..."
-curl -L -o st-alpha.diff https://st.suckless.org/patches/alpha/st-alpha-20240814-a0274bc.diff
-patch -p1 < st-alpha.diff
-rm -f st-alpha.diff config.h
+echo "Adjusting gappx to 15px in dwm config..."
+sed -i 's/^static const unsigned int gappx\s\+=\s\+5;/static const unsigned int gappx     = 15;/' config.def.h
+# Set topbar to 0
+sed -i 's/^static const int topbar\s\+=\s\+1;/static const int topbar             = 0;/' config.def.h
 
-# Download and apply blinking cursor patch
-echo "Applying st blinking cursor patch..."
-curl -L -o st-blinking_cursor.diff https://st.suckless.org/patches/blinking_cursor/st-blinking_cursor-20230819-3a6d6d7.diff
-patch -p1 < st-blinking_cursor.diff
-rm -f st-blinking_cursor.diff config.def.h.orig config.h x.c.orig
+# === DMENU PATCHING ===
+cd "$config_path/dmenu"
 
-# Edit config.def.h font settings
-echo "Updating st font settings in config.def.h..."
+echo "Setting topbar to 0 in dmenu config..."
+sed -i 's/^static int topbar\s\+=\s\+1;/static int topbar = 0;/' config.def.h
+
+# === ST PATCHING ===
+cd "$config_path/st"
+
+echo "Patching st: alpha..."
+curl -LO https://st.suckless.org/patches/alpha/st-alpha-20240814-a0274bc.diff
+patch < st-alpha-20240814-a0274bc.diff
+rm -f st-alpha-20240814-a0274bc.diff config.h
+
+echo "Patching st: blinking cursor..."
+curl -LO https://st.suckless.org/patches/blinking_cursor/st-blinking_cursor-20230819-3a6d6d7.diff
+patch < st-blinking_cursor-20230819-3a6d6d7.diff
+rm -f st-blinking_cursor-20230819-3a6d6d7.diff config.def.h.orig config.h x.c.orig
+
+echo "Configuring st font and shortcuts..."
 sed -i 's/^static char \*font = .*/static char *font = "Liberation Mono:pixelsize=27:antialias=true:autohint=true";/' config.def.h
-
-# Update shortcuts in config.def.h
-echo "Updating st shortcuts in config.def.h..."
 sed -i '/static Shortcut shortcuts\[\] = {/,/};/{
   s/{ TERMMOD, *XK_Prior, *zoom, *{.f = +1} },/{ TERMMOD,              XK_K,           zoom,           {.f = +1} },/
   s/{ TERMMOD, *XK_Next, *zoom, *{.f = -1} },/{ TERMMOD,              XK_J,           zoom,           {.f = -1} },/
 }' config.def.h
 
-cd ..
-
-# Patch dwm to use Mod4 as MODKEY
-DWM_CONFIG="$CONFIG_DIR/dwm/config.def.h"
-if grep -q '#define MODKEY Mod1Mask' "$DWM_CONFIG"; then
-  echo "Patching dwm to use Mod4 (Super) as MODKEY..."
-  sed -i 's/#define MODKEY Mod1Mask/#define MODKEY Mod4Mask/' "$DWM_CONFIG"
-  rm -f "$CONFIG_DIR/dwm/config.h"
-fi
-
-# Build and install dwm, dmenu, st with proper ownership and sudo for install
-for program in dwm dmenu st; do
-  echo "Building and installing $program..."
-  chown -R "$SUDO_USER:$SUDO_USER" "$CONFIG_DIR/$program"
-  sudo -u "$SUDO_USER" make -C "$CONFIG_DIR/$program" clean
-  sudo make -C "$CONFIG_DIR/$program" install
+# === BUILD AND INSTALL ===
+for project in dwm dmenu st; do
+  echo "Building and installing $project..."
+  make -C "$config_path/$project" clean
+  make -C "$config_path/$project" install
 done
 
-# Setup .xinitrc to launch dwm
-echo "Creating .xinitrc to launch dwm..."
-echo "exec dwm" > "$XINITRC_PATH"
-chown "$SUDO_USER:$SUDO_USER" "$XINITRC_PATH"
+# === AUTOSTART ===
+echo "Creating .xinitrc to start dwm..."
+echo "exec dwm" > "$xinitrc_file"
+chown "$SUDO_USER:$SUDO_USER" "$xinitrc_file"
 
-# Setup .bash_profile to start X on tty1
-cat > "$BASH_PROFILE_PATH" <<'EOF'
+echo "Creating .bash_profile to start X on tty1..."
+cat > "$bash_profile_file" <<'EOF'
 if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
     startx
 fi
 EOF
-chown "$SUDO_USER:$SUDO_USER" "$BASH_PROFILE_PATH"
+chown "$SUDO_USER:$SUDO_USER" "$bash_profile_file"
 
-# Enable ALSA runit service if missing
-if [[ ! -L "$ALSA_SERVICE_LINK" ]]; then
-  echo "Enabling ALSA service with runit..."
-  ln -s /etc/runit/sv/alsa "$ALSA_SERVICE_LINK"
+# === ALSA SERVICE ===
+if [[ ! -L "$alsa_service" ]]; then
+  echo "Enabling ALSA audio service..."
+  ln -s /etc/runit/sv/alsa "$alsa_service"
 fi
 
+# === FIXING FILE PERMISSIONS ===
+echo "Fixing file permissions in $config_path..."
+chown -R "$SUDO_USER:$SUDO_USER" "$config_path"
+
 echo
-echo "Suckless environment setup complete. Log in on tty1 to start dwm."
+echo "Suckless environment installed. Log in on tty1 to start dwm."
