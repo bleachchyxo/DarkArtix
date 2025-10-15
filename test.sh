@@ -1,104 +1,231 @@
 #!/bin/bash
 set -euo pipefail
 
-# Must run as sudo
-if [[ -z "${SUDO_USER:-}" ]]; then
-  echo "This script must be run with sudo."
+# Root check
+if [[ $EUID -ne 0 ]]; then
+  echo -e "\033[1;33m[ ! ]\033[0m Please run as root."
   exit 1
 fi
 
-user_home="/home/$SUDO_USER"
-config_path="$user_home/.config"
-xinitrc_file="$user_home/.xinitrc"
-bash_profile_file="$user_home/.bash_profile"
-alsa_service="/etc/runit/runsvdir/default/alsa"
+# Prompt helpers
+ask() {
+  local prompt="$1"
+  local default="$2"
+  read -rp "$prompt [$default]: " input
+  echo "${input:-$default}"
+}
 
-echo "Updating package list and upgrading system..."
-pacman -Syyu --noconfirm
+confirm() {
+  local prompt="$1"
+  local default="${2:-no}"
+  read -rp "$prompt [$default]: " answer
+  answer="${answer:-$default}"
+  [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
+}
 
-echo "Installing essential packages..."
-pacman -S --noconfirm \
-  gcc make git \
-  libx11 libxinerama libxft \
-  xorg xorg-xinit \
-  ttf-dejavu ttf-font-awesome \
-  alsa-utils-runit xcompmgr
+# Colored message function for key actions
+msg() {
+  local color="$1"
+  local message="$2"
+  local color_code
+  case "$color" in
+    "yellow") color_code='\033[1;33m' ;;  # Yellow for warnings
+    "blue") color_code='\033[1;34m' ;;    # Blue for standard actions
+    "green") color_code='\033[1;32m' ;;   # Green for success
+    *) color_code='\033[0m' ;;            # Default
+  esac
+  echo -e "${color_code}[ ! ] ${message}${color_code}\033[0m"
+}
 
-mkdir -p "$config_path"
-cd "$config_path"
+# Detect firmware (BIOS or UEFI)
+firmware="BIOS"
+if [ -d /sys/firmware/efi ]; then
+  firmware="UEFI"
+fi
+echo "Firmware: $firmware"
 
-# Clone suckless repositories
-for project in dwm dmenu st; do
-  if [[ ! -d "$project" ]]; then
-    echo "Cloning $project..."
-    git clone "https://git.suckless.org/$project"
-  else
-    echo "$project already exists. Skipping clone."
+# Disk selection
+msg "yellow" "WARNING: This will erase your entire disk."
+mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /^(loop|ram)/ {print $1, $2}')
+for disk_entry in "${disks[@]}"; do
+  echo "  $disk_entry"
+done
+
+default_disk="${disks[0]%% *}"
+disk_name=$(ask "Choose a disk to install" "$default_disk")
+disk="/dev/$disk_name"
+if [[ ! -b "$disk" ]]; then
+  echo "Invalid disk: $disk"
+  exit 1
+fi
+confirm "Are you sure you want to erase all data on $disk?" "no"
+
+# Hostname and username
+hostname=$(ask "Hostname" "artix")
+username=$(ask "Username" "user")
+
+# Timezone selection
+msg "blue" "Choosing your timezone:"
+echo "Available continents:"
+mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+echo "${continents[@]}" | column -t
+
+continent_input=$(ask "Continent" "America")
+continent=$(echo "$continent_input" | awk '{print tolower($0)}')
+continent_matched=""
+for c in "${continents[@]}"; do
+  if [[ "${c,,}" == "$continent" ]]; then
+    continent_matched="$c"
+    break
   fi
 done
 
-chown -R "$SUDO_USER:$SUDO_USER" "$config_path"
+if [[ -z "$continent_matched" ]]; then
+  echo "Invalid continent '$continent_input'. Please try again."
+  exit 1
+fi
 
-# === ST PATCHING ===
-cd "$config_path/st"
+echo "Available cities in $continent_matched:"
+mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
+echo "${cities[@]}" | column -t
 
-echo "Patching st: alpha..."
-curl -LO https://st.suckless.org/patches/alpha/st-alpha-20240814-a0274bc.diff
-patch < st-alpha-20240814-a0274bc.diff
-rm -f st-alpha-20240814-a0274bc.diff config.h
-
-echo "Patching st: blinking cursor..."
-curl -LO https://st.suckless.org/patches/blinking_cursor/st-blinking_cursor-20230819-3a6d6d7.diff
-patch < st-blinking_cursor-20230819-3a6d6d7.diff
-rm -f st-blinking_cursor-20230819-3a6d6d7.diff config.def.h.orig config.h x.c.orig
-
-echo "Configuring st font and shortcuts..."
-sed -i 's/^static char \*font = .*/static char *font = "Liberation Mono:pixelsize=27:antialias=true:autohint=true";/' config.def.h
-sed -i '/static Shortcut shortcuts\[\] = {/,/};/{
-  s/{ TERMMOD, *XK_Prior, *zoom, *{.f = +1} },/{ TERMMOD,              XK_K,           zoom,           {.f = +1} },/
-  s/{ TERMMOD, *XK_Next, *zoom, *{.f = -1} },/{ TERMMOD,              XK_J,           zoom,           {.f = -1} },/
-}' config.def.h
-
-# === DWM PATCHING ===
-cd "$config_path/dwm"
-
-echo "Patching dwm: fullgaps..."
-curl -LO https://dwm.suckless.org/patches/fullgaps/dwm-fullgaps-20200508-7b77734.diff
-patch < dwm-fullgaps-20200508-7b77734.diff
-rm -f config.def.h.orig dwm.c.orig dwm-fullgaps-20200508-7b77734.diff config.h
-
-echo "Adjusting gappx to 15px in dwm config..."
-sed -i 's/^static const unsigned int gappx\s\+=\s\+5;/static const unsigned int gappx     = 15;/' config.def.h
-
-# === MODKEY PATCHING (Super instead of Alt) ===
-echo "Setting Mod4 (Super) as dwm MODKEY..."
-sed -i 's/#define MODKEY Mod1Mask/#define MODKEY Mod4Mask/' config.def.h || true
-
-# === BUILD AND INSTALL ===
-for project in dwm dmenu st; do
-  echo "Building and installing $project..."
-  make -C "$config_path/$project" clean
-  make -C "$config_path/$project" install
+city_input=$(ask "City" "${cities[RANDOM % ${#cities[@]}]}")
+city=$(echo "$city_input" | awk '{print tolower($0)}')
+city_matched=""
+for c in "${cities[@]}"; do
+  if [[ "${c,,}" == "$city" ]]; then
+    city_matched="$c"
+    break
+  fi
 done
 
-# === AUTOSTART ===
-echo "Creating .xinitrc to start dwm..."
-echo "exec dwm" > "$xinitrc_file"
-chown "$SUDO_USER:$SUDO_USER" "$xinitrc_file"
-
-echo "Creating .bash_profile to start X on tty1..."
-cat > "$bash_profile_file" <<'EOF'
-if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
-    startx
+if [[ -z "$city_matched" ]]; then
+  echo "Invalid city '$city_input'. Please try again."
+  exit 1
 fi
+timezone="$continent_matched/$city_matched"
+
+# Partitioning
+disk_size_bytes=$(blockdev --getsize64 "$disk")
+disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
+
+if (( disk_size_gb < 40 )); then
+  root_size="+10G"
+else
+  root_size="+30G"
+fi
+
+msg "blue" "Creating partitions on $disk..."
+wipefs -a "$disk"
+
+if [[ "$firmware" == "UEFI" ]]; then
+  table_type="g"
+else
+  table_type="o"
+fi
+
+{
+  echo "$table_type"
+  echo n; echo 1; echo; echo +512M
+  echo n; echo 2; echo; echo "$root_size"
+  echo n; echo 3; echo; echo
+  [[ "$firmware" == "BIOS" ]] && echo a && echo 1
+  echo w
+} | fdisk "$disk"
+
+# Partition device names
+part_prefix=""
+[[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
+
+boot_partition="${disk}${part_prefix}1"
+root_partition="${disk}${part_prefix}2"
+home_partition="${disk}${part_prefix}3"
+
+msg "blue" "Waiting for partitions to appear..."
+for p in "$boot_partition" "$root_partition" "$home_partition"; do
+  while [ ! -b "$p" ]; do sleep 0.5; done
+done
+
+# Format partitions
+msg "blue" "Formatting partitions..."
+if [[ "$firmware" == "UEFI" ]]; then
+  mkfs.fat -F32 "$boot_partition"
+else
+  mkfs.ext4 "$boot_partition"
+fi
+mkfs.ext4 "$root_partition"
+mkfs.ext4 "$home_partition"
+
+# Mount partitions
+mount "$root_partition" /mnt
+mkdir -p /mnt/boot /mnt/home
+mount "$boot_partition" /mnt/boot
+mount "$home_partition" /mnt/home
+
+# Bind mount system dirs
+for dir in dev proc sys run; do
+  mkdir -p "/mnt/$dir"
+  mount --bind "/$dir" "/mnt/$dir"
+done
+
+# Install base system
+base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
+[[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
+
+basestrap /mnt "${base_packages[@]}"
+fstabgen -U /mnt > /mnt/etc/fstab
+
+# Prompt for root password
+msg "blue" "Setting root and user passwords:"
+while true; do
+  read -s -p "Root password: " rootpass1; echo
+  read -s -p "Confirm root password: " rootpass2; echo
+  [[ "$rootpass1" == "$rootpass2" && -n "$rootpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
+done
+
+# Prompt for user password
+while true; do
+  read -s -p "User password for '$username': " userpass1; echo
+  read -s -p "Confirm user password: " userpass2; echo
+  [[ "$userpass1" == "$userpass2" && -n "$userpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
+done
+
+# Configure system in chroot
+artix-chroot /mnt /bin/bash <<EOF
+ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+hwclock --systohc
+
+sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+locale-gen
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
+
+echo "$hostname" > /etc/hostname
+echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
+
+useradd -m -G wheel "$username"
+sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+
+ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
+
+if [[ "$firmware" == "UEFI" ]]; then
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+else
+  grub-install --target=i386-pc "$disk"
+fi
+
+grub-mkconfig -o /boot/grub/grub.cfg
+
+echo "root:$rootpass1" | chpasswd
+echo "$username:$userpass1" | chpasswd
 EOF
-chown "$SUDO_USER:$SUDO_USER" "$bash_profile_file"
 
-# === ALSA SERVICE ===
-if [[ ! -L "$alsa_service" ]]; then
-  echo "Enabling ALSA audio service..."
-  ln -s /etc/runit/sv/alsa "$alsa_service"
-fi
+# Cleanup sensitive variables
+unset rootpass1 rootpass2 userpass1 userpass2
 
-echo
-echo "Suckless environment installed. Log in on tty1 to start dwm."
+# Unmount system dirs
+for dir in dev proc sys run; do
+  umount -l "/mnt/$dir"
+done
+
+# Final success message
+msg "green" "Installation successfully completed! Please reboot and remove the installation media."
