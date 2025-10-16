@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Root check
 if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root."
+  echo -e "\033[1;33m[ + ]\033[0m Please run as root."
   exit 1
 fi
 
@@ -25,15 +25,29 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-# Detect firmware
+# Colored message function for key actions
+msg() {
+  local color="$1"
+  local message="$2"
+  local color_code
+  case "$color" in
+    "yellow") color_code='\033[1;33m' ;;  # Yellow for warnings
+    "blue") color_code='\033[1;34m' ;;    # Blue for standard actions
+    "green") color_code='\033[1;32m' ;;   # Green for success
+    *) color_code='\033[0m' ;;            # Default
+  esac
+  echo -e "${color_code}[ + ] ${message}${color_code}\033[0m"
+}
+
+# Detect firmware (BIOS or UEFI)
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
 fi
-echo "Firmware detected: $firmware"
+echo "Firmware: $firmware"
 
-# List available disks
-echo "Available disks:"
+# Disk selection
+msg "yellow" "WARNING: This will erase your entire disk."
 mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /^(loop|ram)/ {print $1, $2}')
 for disk_entry in "${disks[@]}"; do
   echo "  $disk_entry"
@@ -46,57 +60,60 @@ if [[ ! -b "$disk" ]]; then
   echo "Invalid disk: $disk"
   exit 1
 fi
-confirm "This will erase all data on $disk. Continue?" "no"
+confirm "Are you sure you want to erase all data on $disk?" "no"
 
 # Hostname and username
 hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
 # Timezone selection
-while true; do
-  echo "Available continents:"
-  mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-  for c in "${continents[@]}"; do echo "  $c"; done
-
-  continent_input=$(ask "Continent" "America")
-  continent=$(echo "$continent_input" | awk '{print tolower($0)}')
-  continent_matched=""
-  for c in "${continents[@]}"; do
-    if [[ "${c,,}" == "$continent" ]]; then
-      continent_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$continent_matched" ]]; then
-    echo "Invalid continent '$continent_input'. Please try again."
-    continue
-  fi
-
-  echo "Available cities in $continent_matched:"
-  mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
-
-  # Pick a random default city
-  default_city="${cities[RANDOM % ${#cities[@]}]}"
-  for city in "${cities[@]}"; do echo "  $city"; done
-
-  city_input=$(ask "City" "$default_city")
-  city=$(echo "$city_input" | awk '{print tolower($0)}')
-  city_matched=""
-  for c in "${cities[@]}"; do
-    if [[ "${c,,}" == "$city" ]]; then
-      city_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$city_matched" ]]; then
-    echo "Invalid city '$city_input'. Please try again."
-    continue
-  fi
-  timezone="$continent_matched/$city_matched"
-  break
+msg "blue" "Choosing your timezone:"
+echo "Available continents:"
+mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+# Display continents in grid format
+for ((i=0; i<${#continents[@]}; i+=4)); do
+  echo "${continents[@]:i:4}" | tr ' ' '\t'
 done
 
-# Partition sizing
+continent_input=$(ask "Continent" "America")
+continent=$(echo "$continent_input" | awk '{print tolower($0)}')
+continent_matched=""
+for c in "${continents[@]}"; do
+  if [[ "${c,,}" == "$continent" ]]; then
+    continent_matched="$c"
+    break
+  fi
+done
+
+if [[ -z "$continent_matched" ]]; then
+  echo "Invalid continent '$continent_input'. Please try again."
+  exit 1
+fi
+
+echo "Available cities in $continent_matched:"
+mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
+# Display cities in grid format
+for ((i=0; i<${#cities[@]}; i+=4)); do
+  echo "${cities[@]:i:4}" | tr ' ' '\t'
+done
+
+city_input=$(ask "City" "${cities[RANDOM % ${#cities[@]}]}")
+city=$(echo "$city_input" | awk '{print tolower($0)}')
+city_matched=""
+for c in "${cities[@]}"; do
+  if [[ "${c,,}" == "$city" ]]; then
+    city_matched="$c"
+    break
+  fi
+done
+
+if [[ -z "$city_matched" ]]; then
+  echo "Invalid city '$city_input'. Please try again."
+  exit 1
+fi
+timezone="$continent_matched/$city_matched"
+
+# Partitioning
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
@@ -106,10 +123,9 @@ else
   root_size="+30G"
 fi
 
-echo "Wiping and partitioning $disk..."
+msg "blue" "Creating partitions on $disk..."
 wipefs -a "$disk"
 
-# Partitioning using fdisk
 if [[ "$firmware" == "UEFI" ]]; then
   table_type="g"
 else
@@ -133,12 +149,13 @@ boot_partition="${disk}${part_prefix}1"
 root_partition="${disk}${part_prefix}2"
 home_partition="${disk}${part_prefix}3"
 
-echo "Waiting for partitions to appear..."
+msg "blue" "Waiting for partitions to appear..."
 for p in "$boot_partition" "$root_partition" "$home_partition"; do
   while [ ! -b "$p" ]; do sleep 0.5; done
 done
 
 # Format partitions
+msg "blue" "Formatting partitions..."
 if [[ "$firmware" == "UEFI" ]]; then
   mkfs.fat -F32 "$boot_partition"
 else
@@ -167,7 +184,7 @@ basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt > /mnt/etc/fstab
 
 # Prompt for root password
-echo "Set root password:"
+msg "blue" "Setting root and user passwords:"
 while true; do
   read -s -p "Root password: " rootpass1; echo
   read -s -p "Confirm root password: " rootpass2; echo
@@ -175,9 +192,8 @@ while true; do
 done
 
 # Prompt for user password
-echo "Set password for user '$username':"
 while true; do
-  read -s -p "User password: " userpass1; echo
+  read -s -p "User password for '$username': " userpass1; echo
   read -s -p "Confirm user password: " userpass2; echo
   [[ "$userpass1" == "$userpass2" && -n "$userpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
 done
@@ -219,5 +235,6 @@ for dir in dev proc sys run; do
   umount -l "/mnt/$dir"
 done
 
-echo
-echo "Installation complete. Please reboot and remove the installation media."
+# Final success message
+msg "green" "Installation successfully completed! Please reboot and remove the installation media."
+
