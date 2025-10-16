@@ -239,7 +239,7 @@ mount "$home_partition" /mnt/home
 
 # Install the base system
 print_message "Installing the base system..."
-pacstrap /mnt base linux linux-firmware vim
+basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
 
 # Generate fstab
 print_message "Generating fstab..."
@@ -247,33 +247,33 @@ genfstab -U /mnt >> /mnt/etc/fstab
 
 # Set timezone
 print_message "Setting timezone..."
-arch-chroot /mnt ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+artix-chroot /mnt ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
 
 # Localization setup
 print_message "Configuring locales..."
-arch-chroot /mnt locale-gen
+artix-chroot /mnt locale-gen
 echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
 
 # Set hostname
 echo "$hostname" > /mnt/etc/hostname
-arch-chroot /mnt systemctl enable systemd-networkd
-arch-chroot /mnt systemctl enable systemd-resolved
+artix-chroot /mnt systemctl enable systemd-networkd
+artix-chroot /mnt systemctl enable systemd-resolved
 
 # Set root password
 root_password=$(ask "Root password" "root")
-arch-chroot /mnt useradd -m -G wheel "$username"
-echo "$username:$root_password" | arch-chroot /mnt chpasswd
+artix-chroot /mnt useradd -m -G wheel "$username"
+echo "$username:$root_password" | artix-chroot /mnt chpasswd
 
 # Install and configure bootloader
 print_message "Installing bootloader..."
 if [[ "$firmware" == "UEFI" ]]; then
   pacstrap /mnt grub efibootmgr
-  arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+  artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
   pacstrap /mnt grub
-  arch-chroot /mnt grub-install --target=i386-pc /dev/sda
+  artix-chroot /mnt grub-install --target=i386-pc /dev/sda
 fi
-arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
 # Finish up
 print_message "Installation complete. Please reboot and remove the installation media."
