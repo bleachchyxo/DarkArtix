@@ -25,21 +25,25 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
+# Display colored [+] message
+print_message() {
+  echo -e "\033[32m[+]\033[0m $1"
+}
+
 # Detect firmware
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
 fi
-echo "Firmware detected: $firmware"
+print_message "Firmware detected: $firmware"
 
 # List available disks
-echo "Available disks:"
+print_message "Available disks:"
 mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /^(loop|ram)/ {print $1, $2}')
 for disk_entry in "${disks[@]}"; do
   echo "  $disk_entry"
 done
 
-# Disk selection
 default_disk="${disks[0]%% *}"
 disk_name=$(ask "Choose a disk to install" "$default_disk")
 disk="/dev/$disk_name"
@@ -54,129 +58,222 @@ hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
 # Timezone selection
-timezone=$(ask "Timezone" "America/New_York")
+print_message "Available continents:"
+mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+for c in "${continents[@]}"; do echo "  $c"; done
 
-# Partition sizing (flexible partitioning)
-disk_size_bytes=$(blockdev --getsize64 "$disk")
-disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
-
-# Set partition sizes based on disk size
-boot_size="1G"
-if (( disk_size_gb < 40 )); then
-  root_size=$(( disk_size_gb * 30 / 100 ))"G"  # 30% of disk size for small disks
-else
-  root_size="30G"  # 30GB for larger disks
+continent_input=$(ask "Continent" "America")
+continent=$(echo "$continent_input" | awk '{print tolower($0)}')
+continent_matched=""
+for c in "${continents[@]}"; do
+  if [[ "${c,,}" == "$continent" ]]; then
+    continent_matched="$c"
+    break
+  fi
+done
+if [[ -z "$continent_matched" ]]; then
+  echo "Invalid continent '$continent_input'. Please try again."
+  exit 1
 fi
 
-# Remaining space for /home
-remaining_size=$(( disk_size_gb - 1 - ${root_size%G} ))
+# Pick cities based on continent
+print_message "Available cities in $continent_matched:"
+mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
 
-echo "Disk Size: $disk_size_gb GB"
-echo "Partitioning will be as follows:"
-echo "  /boot = $boot_size"
-echo "  / = $root_size"
-echo "  /home = ${remaining_size}G"
+# List cities with better formatting (one more space apart)
+cols=4
+for i in "${!cities[@]}"; do
+  if (( i % cols == 0 )); then
+    echo
+  fi
+  printf "%-15s" "${cities[$i]}"  # Adding extra space for better separation
+done
+echo
 
-# Wipe existing partition table
+# Pick city and timezone
+city_input=$(ask "City" "${cities[0]}")
+city=$(echo "$city_input" | awk '{print tolower($0)}')
+city_matched=""
+for c in "${cities[@]}"; do
+  if [[ "${c,,}" == "$city" ]]; then
+    city_matched="$c"
+    break
+  fi
+done
+if [[ -z "$city_matched" ]]; then
+  echo "Invalid city '$city_input'. Please try again."
+  exit 1
+fi
+timezone="$continent_matched/$city_matched"
+
+# Partition sizes: 1G for /boot, 30G for /, and the rest for /home
+# Dynamically calculate sizes based on total disk size
+disk_size_gb=$(lsblk -bno SIZE "$disk" | awk '{print int($1/1024/1024/1024)}')
+
+# Calculate partition sizes (keeping partitions proportional)
+boot_size_gb=1
+root_size_gb=30
+home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
+
+# Safety check to ensure home partition isn't negative
+if (( home_size_gb < 1 )); then
+  home_size_gb=1
+  root_size_gb=$(( disk_size_gb - boot_size_gb - home_size_gb ))
+fi
+
+# Display partition sizes
+print_message "Disk size: $disk_size_gb GB"
+print_message "/boot size: $boot_size_gb GB"
+print_message "/ size: $root_size_gb GB"
+print_message "/home size: $home_size_gb GB"
+
+# Calculate partition sizes in sectors (based on disk size)
+sector_size=$(blockdev --getss "$disk")
+total_sectors=$(blockdev --getsz "$disk")
+
+boot_size_sectors=$(( boot_size_gb * 1024 * 1024 * 1024 / sector_size ))
+root_size_sectors=$(( root_size_gb * 1024 * 1024 * 1024 / sector_size ))
+home_size_sectors=$(( home_size_gb * 1024 * 1024 * 1024 / sector_size ))
+
+# Ensure the partition sizes do not exceed the disk space
+if (( boot_size_sectors + root_size_sectors + home_size_sectors > total_sectors )); then
+  print_message "[ERROR] Partition sizes exceed disk space. Adjusting sizes..."
+  home_size_sectors=$(( total_sectors - boot_size_sectors - root_size_sectors ))
+fi
+
+# Partition start and end sectors (start at sector 2048 for alignment)
+part1_start=2048
+part1_end=$(( part1_start + boot_size_sectors - 1 ))
+
+part2_start=$(( part1_end + 1 ))
+part2_end=$(( part2_start + root_size_sectors - 1 ))
+
+part3_start=$(( part2_end + 1 ))
+part3_end=$(( part3_start + home_size_sectors - 1 ))
+
+# Safety check to not exceed disk size
+if (( part3_end > total_sectors )); then
+  part3_end=$(( total_sectors - 1 ))
+fi
+
+# Show partition layout
+print_message "Partition layout:"
+echo "/boot   : sectors $part1_start - $part1_end (~$boot_size_gb GB)"
+echo "/       : sectors $part2_start - $part2_end (~$root_size_gb GB)"
+echo "/home   : sectors $part3_start - $part3_end (~$home_size_gb GB)"
+
+# Wipe existing data and create partitions using fdisk
+print_message "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
-# Partitioning with fdisk (creating a GPT partition table)
+# Partitioning using fdisk
 {
-  echo g  # GPT partition table
-  echo n  # /boot partition
-  echo    # Partition number 1
-  echo    # Default start
-  echo +$boot_size  # Partition size
-  echo n  # / partition
-  echo    # Partition number 2
-  echo    # Default start
-  echo +$root_size  # Partition size
-  echo n  # /home partition
-  echo    # Partition number 3
-  echo    # Default start (use the remaining space)
-  echo w  # Write changes
+  if [[ "$firmware" == "UEFI" ]]; then
+    echo g
+  else
+    echo o
+  fi
+
+  # /boot
+  echo n
+  echo p
+  echo 1
+  echo $part1_start
+  echo $part1_end
+
+  # /
+  echo n
+  echo p
+  echo 2
+  echo $part2_start
+  echo $part2_end
+
+  # /home
+  echo n
+  echo p
+  echo 3
+  echo $part3_start
+  echo $part3_end
+
+  # Mark bootable if BIOS
+  if [[ "$firmware" == "BIOS" ]]; then
+    echo a
+    echo 1
+  fi
+
+  echo w
 } | fdisk "$disk"
 
-# Wait for partitions to be available
-sleep 2
+# Partition device names
+part_prefix=""
+[[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
 
-# Format partitions
-mkfs.ext4 "${disk}1"  # /boot
-mkfs.ext4 "${disk}2"  # /
-mkfs.ext4 "${disk}3"  # /home
+boot_partition="${disk}${part_prefix}1"
+root_partition="${disk}${part_prefix}2"
+home_partition="${disk}${part_prefix}3"
 
-# Mount partitions
-mount "${disk}2" /mnt  # mount /
-mkdir -p /mnt/boot /mnt/home
-mount "${disk}1" /mnt/boot  # mount /boot
-mount "${disk}3" /mnt/home  # mount /home
-
-# Bind mount system directories
-for dir in dev proc sys run; do
-  mkdir -p "/mnt/$dir"
-  mount --bind "/$dir" "/mnt/$dir"
+# Wait for partitions to appear
+print_message "Waiting for partitions to appear..."
+for i in {1..60}; do
+  if [ -b "$boot_partition" ] && [ -b "$root_partition" ] && [ -b "$home_partition" ]; then
+    break
+  fi
+  sleep 0.5
 done
 
-# Install base system (customizable packages)
-base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
-[[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
-
-# Installing base system
-basestrap /mnt "${base_packages[@]}"
-fstabgen -U /mnt > /mnt/etc/fstab
-
-# Prompt for root password
-echo "Set root password:"
-while true; do
-  read -s -p "Root password: " rootpass1; echo
-  read -s -p "Confirm root password: " rootpass2; echo
-  [[ "$rootpass1" == "$rootpass2" && -n "$rootpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
-done
-
-# Prompt for user password
-echo "Set password for user '$username':"
-while true; do
-  read -s -p "User password: " userpass1; echo
-  read -s -p "Confirm user password: " userpass2; echo
-  [[ "$userpass1" == "$userpass2" && -n "$userpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
-done
-
-# Configure system in chroot
-artix-chroot /mnt /bin/bash <<EOF
-ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
-hwclock --systohc
-
-sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
-
-echo "$hostname" > /etc/hostname
-echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
-
-useradd -m -G wheel "$username"
-sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
-
-ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
-
-if [[ "$firmware" == "UEFI" ]]; then
-  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
-else
-  grub-install --target=i386-pc "$disk"
+# If partitions are not detected within 30 seconds, exit with error
+if [ ! -b "$boot_partition" ] || [ ! -b "$root_partition" ] || [ ! -b "$home_partition" ]; then
+  echo "Error: Partitions not detected in time."
+  exit 1
 fi
 
-grub-mkconfig -o /boot/grub/grub.cfg
+# Format and mount partitions
+mkfs.ext4 "$boot_partition"
+mkfs.ext4 "$root_partition"
+mkfs.ext4 "$home_partition"
 
-echo "root:$rootpass1" | chpasswd
-echo "$username:$userpass1" | chpasswd
-EOF
+mount "$root_partition" /mnt
+mkdir -p /mnt/boot /mnt/home
+mount "$boot_partition" /mnt/boot
+mount "$home_partition" /mnt/home
 
-# Cleanup sensitive variables
-unset rootpass1 rootpass2 userpass1 userpass2
+# Install the base system
+print_message "Installing the base system..."
+pacstrap /mnt base linux linux-firmware vim
 
-# Unmount system dirs
-for dir in dev proc sys run; do
-  umount -l "/mnt/$dir"
-done
+# Generate fstab
+print_message "Generating fstab..."
+genfstab -U /mnt >> /mnt/etc/fstab
 
-echo
-echo "Installation complete. Please reboot and remove the installation media."
+# Set timezone
+print_message "Setting timezone..."
+arch-chroot /mnt ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+
+# Localization setup
+print_message "Configuring locales..."
+arch-chroot /mnt locale-gen
+echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
+
+# Set hostname
+echo "$hostname" > /mnt/etc/hostname
+arch-chroot /mnt systemctl enable systemd-networkd
+arch-chroot /mnt systemctl enable systemd-resolved
+
+# Set root password
+root_password=$(ask "Root password" "root")
+arch-chroot /mnt useradd -m -G wheel "$username"
+echo "$username:$root_password" | arch-chroot /mnt chpasswd
+
+# Install and configure bootloader
+print_message "Installing bootloader..."
+if [[ "$firmware" == "UEFI" ]]; then
+  pacstrap /mnt grub efibootmgr
+  arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+else
+  pacstrap /mnt grub
+  arch-chroot /mnt grub-install --target=i386-pc /dev/sda
+fi
+arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+
+# Finish up
+print_message "Installation complete. Please reboot and remove the installation media."
