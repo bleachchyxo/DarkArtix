@@ -7,22 +7,12 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# Prompt helpers
+# Ask function to handle user input
 ask() {
   local prompt="$1"
   local default="$2"
   read -rp "$prompt [$default]: " input
   echo "${input:-$default}"
-}
-
-confirm() {
-  local prompt="$1"
-  local default="${2:-no}"
-  local yn_format
-  [[ "${default,,}" =~ ^(yes|y)$ ]] && yn_format="[Y/n]" || yn_format="[y/N]"
-  read -rp "$prompt $yn_format: " answer
-  answer="${answer:-$default}"
-  [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
 # Detect firmware
@@ -52,11 +42,11 @@ confirm "This will erase all data on $disk. Continue?" "no"
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
-# Calculate partition sizes based on disk size
+# Calculate partition sizes dynamically based on disk size
 if (( disk_size_gb <= 20 )); then
   boot_size="+500M"
-  root_size="+12G"
-  home_size="+6G"
+  root_size="+10G"
+  home_size="+5G"
 elif (( disk_size_gb <= 40 )); then
   boot_size="+1G"
   root_size="+20G"
@@ -72,16 +62,16 @@ echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
 if [[ "$firmware" == "UEFI" ]]; then
-  table_type="g"
+  table_type="g"  # GPT partition table for UEFI
 else
-  table_type="o"
+  table_type="o"  # MBR partition table for BIOS
 fi
 
 {
   echo "$table_type"
-  echo n; echo 1; echo; echo $boot_size  # Boot partition
-  echo n; echo 2; echo; echo $root_size  # Root partition
-  echo n; echo 3; echo; echo $home_size  # Home partition
+  echo n; echo 1; echo; echo $boot_size   # Boot partition
+  echo n; echo 2; echo; echo $root_size   # Root partition
+  echo n; echo 3; echo; echo $home_size   # Home partition
   [[ "$firmware" == "BIOS" ]] && echo a && echo 1  # Set boot flag if BIOS
   echo w
 } | fdisk "$disk"
