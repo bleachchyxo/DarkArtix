@@ -111,21 +111,22 @@ home_size="+${remaining_size}G"
 echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
-# Partitioning using fdisk
+# Partitioning using parted
 if [[ "$firmware" == "UEFI" ]]; then
-  table_type="g"
+  parted -s "$disk" mklabel gpt
 else
-  table_type="o"
+  parted -s "$disk" mklabel msdos
 fi
 
-{
-  echo "$table_type"
-  echo n; echo 1; echo; echo +1G             # /boot partition, 1GB
-  echo n; echo 2; echo; echo +30G             # / partition, 30GB
-  echo n; echo 3; echo; echo "$home_size"     # /home partition, remaining space
-  [[ "$firmware" == "BIOS" ]] && echo a && echo 1  # BIOS boot flag
-  echo w
-} | fdisk "$disk"
+# Create partitions
+parted -s "$disk" mkpart primary fat32 1MiB "$boot_size"
+parted -s "$disk" mkpart primary ext4 "$boot_size" "$root_size"
+parted -s "$disk" mkpart primary ext4 "$root_size" "$home_size"
+
+# Set partition types
+if [[ "$firmware" == "UEFI" ]]; then
+  parted -s "$disk" set 1 boot on
+fi
 
 # Partition device names
 part_prefix=""
@@ -221,5 +222,9 @@ for dir in dev proc sys run; do
   umount -l "/mnt/$dir"
 done
 
+# Unmount partitions
+umount -R /mnt
+
 echo
 echo "Installation complete. Please reboot and remove the installation media."
+
