@@ -7,6 +7,24 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# Prompt helpers
+ask() {
+  local prompt="$1"
+  local default="$2"
+  read -rp "$prompt [$default]: " input
+  echo "${input:-$default}"
+}
+
+confirm() {
+  local prompt="$1"
+  local default="${2:-no}"
+  local yn_format
+  [[ "${default,,}" =~ ^(yes|y)$ ]] && yn_format="[Y/n]" || yn_format="[y/N]"
+  read -rp "$prompt $yn_format: " answer
+  answer="${answer:-$default}"
+  [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
+}
+
 # Detect firmware
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
@@ -114,6 +132,7 @@ while true; do
 done
 
 # Prompt for user password
+username=$(ask "Username" "user")
 echo "Set password for user '$username':"
 while true; do
   read -s -p "User password: " userpass1; echo
