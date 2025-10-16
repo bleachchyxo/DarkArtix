@@ -114,6 +114,7 @@ home_partition="${disk}${part_prefix}3"
 # Waiting for partitions to appear with a timeout mechanism
 timeout=30  # Timeout in seconds
 counter=0
+partition_check_success=false
 
 # Check if partitions exist
 for p in "$boot_partition" "$root_partition" "$home_partition"; do
@@ -125,7 +126,17 @@ for p in "$boot_partition" "$root_partition" "$home_partition"; do
       break
     fi
   done
+  # If any partition is found, break the loop
+  if [[ -b "$p" ]]; then
+    partition_check_success=true
+  fi
 done
+
+# If none of the partitions are detected, show an error and exit
+if ! $partition_check_success; then
+  msg "yellow" "Error: Partitions not detected. Please check the disk and partitioning steps."
+  exit 1
+fi
 
 # Format partitions
 msg "blue" "Formatting partitions..."
