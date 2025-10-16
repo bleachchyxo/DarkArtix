@@ -80,13 +80,13 @@ fi
 print_message "Available cities in $continent_matched:"
 mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
 
-# List cities with better formatting
+# List cities with better formatting (one more space apart)
 cols=4
 for i in "${!cities[@]}"; do
   if (( i % cols == 0 )); then
     echo
   fi
-  printf "%-12s" "${cities[$i]}"
+  printf "%-15s" "${cities[$i]}"  # Adding extra space for better separation
 done
 echo
 
@@ -110,8 +110,17 @@ timezone="$continent_matched/$city_matched"
 boot_size_gb=1
 root_size_gb=30
 
-# Get disk size in GB
-disk_size_gb=$(lsblk -bno SIZE "$disk" | awk '{print $1/1024/1024/1024}')
+# Get disk size in GB and convert to integer (fixing the non-integer problem)
+disk_size_bytes=$(lsblk -bno SIZE "$disk" | awk '{print $1}')
+disk_size_gb=$((disk_size_bytes / 1024 / 1024 / 1024))
+
+# Check if disk size is valid and set home_size_gb
+if (( disk_size_gb < (boot_size_gb + root_size_gb) )); then
+  echo "Disk size too small. Cannot allocate the requested sizes for partitions."
+  exit 1
+fi
+
+# Calculate remaining space for /home
 home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
 
 # Calculate partition sizes in sectors
