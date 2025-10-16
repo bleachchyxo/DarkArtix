@@ -228,6 +228,7 @@ if [ ! -b "$boot_partition" ] || [ ! -b "$root_partition" ] || [ ! -b "$home_par
 fi
 
 # Format and mount partitions
+print_message "Formatting partitions..."
 mkfs.ext4 "$boot_partition"
 mkfs.ext4 "$root_partition"
 mkfs.ext4 "$home_partition"
@@ -239,7 +240,7 @@ mount "$home_partition" /mnt/home
 
 # Install the base system
 print_message "Installing the base system..."
-basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
+artix-chroot /mnt basestrap base base-devel runit elogind-runit linux linux-firmware networkmanager networkmanager-runit neovim
 
 # Generate fstab
 print_message "Generating fstab..."
@@ -256,8 +257,7 @@ echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
 
 # Set hostname
 echo "$hostname" > /mnt/etc/hostname
-artix-chroot /mnt systemctl enable systemd-networkd
-artix-chroot /mnt systemctl enable systemd-resolved
+artix-chroot /mnt ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
 
 # Set root password
 root_password=$(ask "Root password" "root")
@@ -267,10 +267,10 @@ echo "$username:$root_password" | artix-chroot /mnt chpasswd
 # Install and configure bootloader
 print_message "Installing bootloader..."
 if [[ "$firmware" == "UEFI" ]]; then
-  pacstrap /mnt grub efibootmgr
+  artix-chroot /mnt pacman -S grub efibootmgr
   artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
-  pacstrap /mnt grub
+  artix-chroot /mnt pacman -S grub
   artix-chroot /mnt grub-install --target=i386-pc /dev/sda
 fi
 artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
