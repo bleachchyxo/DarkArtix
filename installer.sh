@@ -35,7 +35,7 @@ firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
 fi
-print_message "Firmware detected: $firmware"
+echo "Firmware detected: $firmware"
 
 # List available disks
 print_message "Available disks:"
@@ -106,28 +106,31 @@ if [[ -z "$city_matched" ]]; then
 fi
 timezone="$continent_matched/$city_matched"
 
-# Partition sizes: 1G for /boot, 30G for /, and the rest for /home
-# Dynamically calculate sizes based on total disk size
+# Partition sizes based on disk size
 disk_size_gb=$(lsblk -bno SIZE "$disk" | awk '{print int($1/1024/1024/1024)}')
 
-# Calculate partition sizes (keeping partitions proportional)
-boot_size_gb=1
-root_size_gb=30
-home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
-
-# Safety check to ensure home partition isn't negative
-if (( home_size_gb < 1 )); then
-  home_size_gb=1
-  root_size_gb=$(( disk_size_gb - boot_size_gb - home_size_gb ))
+# Define partition sizes dynamically based on disk size
+if (( disk_size_gb <= 20 )); then
+  boot_size_gb=512M
+  root_size_gb=10G
+  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))  # Small disk size case
+elif (( disk_size_gb <= 100 )); then
+  boot_size_gb=1G
+  root_size_gb=20G
+  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))  # Medium disk size case
+else
+  boot_size_gb=1G
+  root_size_gb=30G
+  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))  # Large disk size case
 fi
 
-# Display partition sizes
-print_message "Disk size: $disk_size_gb GB"
-print_message "/boot size: $boot_size_gb GB"
-print_message "/ size: $root_size_gb GB"
-print_message "/home size: $home_size_gb GB"
+# Output partition sizes
+print_message "Disk size: ${disk_size_gb}G"
+print_message "Boot partition: $boot_size_gb"
+print_message "Root partition: $root_size_gb"
+print_message "Home partition: $home_size_gb"
 
-# Calculate partition sizes in sectors (based on disk size)
+# Get sector size and calculate partition sizes in sectors
 sector_size=$(blockdev --getss "$disk")
 total_sectors=$(blockdev --getsz "$disk")
 
@@ -135,7 +138,7 @@ boot_size_sectors=$(( boot_size_gb * 1024 * 1024 * 1024 / sector_size ))
 root_size_sectors=$(( root_size_gb * 1024 * 1024 * 1024 / sector_size ))
 home_size_sectors=$(( home_size_gb * 1024 * 1024 * 1024 / sector_size ))
 
-# Ensure the partition sizes do not exceed the disk space
+# Ensure the partition sizes are within the disk's size
 if (( boot_size_sectors + root_size_sectors + home_size_sectors > total_sectors )); then
   print_message "[ERROR] Partition sizes exceed disk space. Adjusting sizes..."
   home_size_sectors=$(( total_sectors - boot_size_sectors - root_size_sectors ))
@@ -169,9 +172,9 @@ wipefs -a "$disk"
 # Partitioning using fdisk
 {
   if [[ "$firmware" == "UEFI" ]]; then
-    echo g
+    echo g  # UEFI GPT partitioning
   else
-    echo o
+    echo o  # BIOS MBR partitioning
   fi
 
   # /boot
@@ -233,47 +236,73 @@ mkfs.ext4 "$boot_partition"
 mkfs.ext4 "$root_partition"
 mkfs.ext4 "$home_partition"
 
+# Mount partitions
+print_message "Mounting partitions..."
 mount "$root_partition" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot_partition" /mnt/boot
 mount "$home_partition" /mnt/home
 
-# Install the base system
-print_message "Installing the base system..."
-artix-chroot /mnt basestrap base base-devel runit elogind-runit linux linux-firmware networkmanager networkmanager-runit neovim
+# Installing the base system
+print_message "Installing base system..."
+basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
 
-# Generate fstab
+# Generating fstab
 print_message "Generating fstab..."
-genfstab -U /mnt >> /mnt/etc/fstab
+fstabgen -U /mnt >> /mnt/etc/fstab
 
-# Set timezone
-print_message "Setting timezone..."
-artix-chroot /mnt ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+# Chroot into the system
+print_message "Chrooting into the system..."
+artix-chroot /mnt <<EOF
 
-# Localization setup
-print_message "Configuring locales..."
-artix-chroot /mnt locale-gen
-echo "LANG=en_US.UTF-8" > /mnt/etc/locale.conf
+# Setting the timezone
+ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+hwclock --systohc
 
-# Set hostname
-echo "$hostname" > /mnt/etc/hostname
-artix-chroot /mnt ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
+# Setting locales
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
+
+# Setting the hostname
+echo "$hostname" > /etc/hostname
+echo -e "127.0.0.1\tlocalhost\n::1\tlocalhost\n127.0.1.1\t$hostname.localdomain\t$hostname" > /etc/hosts
+
+# Install and configure network manager
+pacman -S --noconfirm networkmanager networkmanager-runit
+ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
+
+# Install GRUB
+if [[ "$firmware" == "UEFI" ]]; then
+  pacman -S --noconfirm grub efibootmgr
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+else
+  pacman -S --noconfirm grub
+  grub-install --target=i386-pc /dev/$disk_name
+fi
+
+# Generate GRUB config
+grub-mkconfig -o /boot/grub/grub.cfg
 
 # Set root password
-root_password=$(ask "Root password" "root")
-artix-chroot /mnt useradd -m -G wheel "$username"
-echo "$username:$root_password" | artix-chroot /mnt chpasswd
+echo "Please set the root password:"
+passwd
 
-# Install and configure bootloader
-print_message "Installing bootloader..."
-if [[ "$firmware" == "UEFI" ]]; then
-  artix-chroot /mnt pacman -S grub efibootmgr
-  artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
-else
-  artix-chroot /mnt pacman -S grub
-  artix-chroot /mnt grub-install --target=i386-pc /dev/sda
-fi
-artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+# Create a user and set password
+echo "Creating user $username..."
+useradd -m -G wheel "$username"
+echo "Set password for $username:"
+passwd "$username"
 
-# Finish up
+# Enable network manager service
+print_message "Enabling NetworkManager service..."
+ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
+
+# Exit chroot
+exit
+EOF
+
+# Final steps
 print_message "Installation complete. Please reboot and remove the installation media."
+
+
