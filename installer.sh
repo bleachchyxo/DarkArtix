@@ -106,31 +106,23 @@ if [[ -z "$city_matched" ]]; then
 fi
 timezone="$continent_matched/$city_matched"
 
-# Partition sizes based on disk size
+# Partition sizes: 1G for /boot, 30G for /, and the rest for /home
+boot_size_gb=1
+root_size_gb=30
+
+# Get disk size in GB and convert to integer (fixing the non-integer problem)
 disk_size_gb=$(lsblk -bno SIZE "$disk" | awk '{print int($1/1024/1024/1024)}')
 
-# Define partition sizes dynamically based on disk size
-if (( disk_size_gb <= 20 )); then
-  boot_size_gb=512M
-  root_size_gb=10G
-  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))  # Small disk size case
-elif (( disk_size_gb <= 100 )); then
-  boot_size_gb=1G
-  root_size_gb=20G
-  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))  # Medium disk size case
-else
-  boot_size_gb=1G
-  root_size_gb=30G
-  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))  # Large disk size case
+# Calculate remaining space for /home
+home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
+
+# Ensure home_size_gb is non-negative, in case the disk is too small
+if (( home_size_gb <= 0 )); then
+  echo "Warning: Not enough space for all partitions. Adjusting /home size to use remaining space."
+  home_size_gb=1  # At least 1GB for /home
 fi
 
-# Output partition sizes
-print_message "Disk size: ${disk_size_gb}G"
-print_message "Boot partition: $boot_size_gb"
-print_message "Root partition: $root_size_gb"
-print_message "Home partition: $home_size_gb"
-
-# Get sector size and calculate partition sizes in sectors
+# Calculate partition sizes in sectors
 sector_size=$(blockdev --getss "$disk")
 total_sectors=$(blockdev --getsz "$disk")
 
@@ -172,9 +164,9 @@ wipefs -a "$disk"
 # Partitioning using fdisk
 {
   if [[ "$firmware" == "UEFI" ]]; then
-    echo g  # UEFI GPT partitioning
+    echo g
   else
-    echo o  # BIOS MBR partitioning
+    echo o
   fi
 
   # /boot
@@ -242,7 +234,6 @@ mount "$root_partition" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot_partition" /mnt/boot
 mount "$home_partition" /mnt/home
-
 # Installing the base system
 print_message "Installing base system..."
 basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
