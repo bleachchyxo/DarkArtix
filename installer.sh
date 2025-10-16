@@ -25,7 +25,7 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-# Detect firmware
+# Detect firmware type
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
@@ -48,87 +48,62 @@ if [[ ! -b "$disk" ]]; then
 fi
 confirm "This will erase all data on $disk. Continue?" "no"
 
-# Hostname and username
-hostname=$(ask "Hostname" "artix")
-username=$(ask "Username" "user")
-
-# Timezone selection
-while true; do
-  echo "Available continents:"
-  mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-  for c in "${continents[@]}"; do echo "  $c"; done
-
-  continent_input=$(ask "Continent" "America")
-  continent=$(echo "$continent_input" | awk '{print tolower($0)}')
-  continent_matched=""
-  for c in "${continents[@]}"; do
-    if [[ "${c,,}" == "$continent" ]]; then
-      continent_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$continent_matched" ]]; then
-    echo "Invalid continent '$continent_input'. Please try again."
-    continue
-  fi
-
-  echo "Available cities in $continent_matched:"
-  mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
-
-  # Pick a random default city
-  default_city="${cities[RANDOM % ${#cities[@]}]}"
-  for city in "${cities[@]}"; do echo "  $city"; done
-
-  city_input=$(ask "City" "$default_city")
-  city=$(echo "$city_input" | awk '{print tolower($0)}')
-  city_matched=""
-  for c in "${cities[@]}"; do
-    if [[ "${c,,}" == "$city" ]]; then
-      city_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$city_matched" ]]; then
-    echo "Invalid city '$city_input'. Please try again."
-    continue
-  fi
-  timezone="$continent_matched/$city_matched"
-  break
-done
-
-# Partition sizing
+# Partition sizing logic
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
-# Partition size logic
-boot_size="+1G"    # Fixed size for /boot
-root_size="+30G"   # Fixed size for /, will be 30GB
+# Set partition sizes
+boot_size="1G"
+root_size="30G"
+home_size=$(( disk_size_gb - 31 ))"G"  # Remaining space for /home (subtract 1G for /boot and 30G for /)
 
-# Remaining space for /home
-remaining_size=$(( disk_size_gb - 31 ))  # Subtract 1G for /boot and 30G for /
-home_size="+${remaining_size}G"
+if (( disk_size_gb < 40 )); then
+  root_size="+10G"
+  home_size="+5G"
+fi
 
 echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
-# Partitioning using parted
-if [[ "$firmware" == "UEFI" ]]; then
-  parted -s "$disk" mklabel gpt
-else
-  parted -s "$disk" mklabel msdos
-fi
+# Create partition table (GPT for UEFI, MBR for BIOS)
+{
+  if [[ "$firmware" == "UEFI" ]]; then
+    echo g  # GPT for UEFI
+  else
+    echo o  # MBR for BIOS
+  fi
 
-# Create partitions
-parted -s "$disk" mkpart primary fat32 1MiB "$boot_size"
-parted -s "$disk" mkpart primary ext4 "$boot_size" "$root_size"
-parted -s "$disk" mkpart primary ext4 "$root_size" "$home_size"
+  # /boot partition (1G)
+  echo n
+  echo p
+  echo 1
+  echo
+  echo "$boot_size"
 
-# Set partition types
-if [[ "$firmware" == "UEFI" ]]; then
-  parted -s "$disk" set 1 boot on
-fi
+  # / partition (30G or less if needed)
+  echo n
+  echo p
+  echo 2
+  echo
+  echo "$root_size"
 
-# Partition device names
+  # /home partition (remaining space)
+  echo n
+  echo p
+  echo 3
+  echo
+  echo "$home_size"
+
+  # Mark bootable if BIOS
+  if [[ "$firmware" == "BIOS" ]]; then
+    echo a
+    echo 1
+  fi
+
+  echo w
+} | fdisk "$disk"
+
+# Partition device names (handles NVMe/other cases)
 part_prefix=""
 [[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
 
@@ -227,4 +202,3 @@ umount -R /mnt
 
 echo
 echo "Installation complete. Please reboot and remove the installation media."
-
