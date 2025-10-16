@@ -15,6 +15,17 @@ ask() {
   echo "${input:-$default}"
 }
 
+# Confirm function for destructive actions
+confirm() {
+  local prompt="$1"
+  local default="${2:-no}"
+  local yn_format
+  [[ "${default,,}" =~ ^(yes|y)$ ]] && yn_format="[Y/n]" || yn_format="[y/N]"
+  read -rp "$prompt $yn_format: " answer
+  answer="${answer:-$default}"
+  [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
+}
+
 # Detect firmware
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
