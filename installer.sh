@@ -48,11 +48,58 @@ if [[ ! -b "$disk" ]]; then
 fi
 confirm "This will erase all data on $disk. Continue?" "no"
 
+# Hostname and username
+hostname=$(ask "Hostname" "artix")
+username=$(ask "Username" "user")
+
+# Timezone selection
+while true; do
+  echo "Available continents:"
+  mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+  for c in "${continents[@]}"; do echo "  $c"; done
+
+  continent_input=$(ask "Continent" "America")
+  continent=$(echo "$continent_input" | awk '{print tolower($0)}')
+  continent_matched=""
+  for c in "${continents[@]}"; do
+    if [[ "${c,,}" == "$continent" ]]; then
+      continent_matched="$c"
+      break
+    fi
+  done
+  if [[ -z "$continent_matched" ]]; then
+    echo "Invalid continent '$continent_input'. Please try again."
+    continue
+  fi
+
+  echo "Available cities in $continent_matched:"
+  mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
+
+  # Pick a random default city
+  default_city="${cities[RANDOM % ${#cities[@]}]}"
+  for city in "${cities[@]}"; do echo "  $city"; done
+
+  city_input=$(ask "City" "$default_city")
+  city=$(echo "$city_input" | awk '{print tolower($0)}')
+  city_matched=""
+  for c in "${cities[@]}"; do
+    if [[ "${c,,}" == "$city" ]]; then
+      city_matched="$c"
+      break
+    fi
+  done
+  if [[ -z "$city_matched" ]]; then
+    echo "Invalid city '$city_input'. Please try again."
+    continue
+  fi
+  timezone="$continent_matched/$city_matched"
+  break
+done
+
 # Partition sizing logic
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
-# Set partition sizes
 boot_size="1G"
 root_size="30G"
 home_size=$(( disk_size_gb - 31 ))"G"  # Remaining space for /home (subtract 1G for /boot and 30G for /)
