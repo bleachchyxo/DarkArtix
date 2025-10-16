@@ -110,17 +110,19 @@ timezone="$continent_matched/$city_matched"
 boot_size_gb=1
 root_size_gb=30
 
-# Get disk size in GB and convert to integer (fixing the non-integer problem)
-disk_size_bytes=$(lsblk -bno SIZE "$disk" | awk '{print $1}')
+# Get disk size in bytes
+disk_size_bytes=$(lsblk -bno SIZE "$disk" | tr -d '[:space:]')
+
+# Convert disk size from bytes to GB
 disk_size_gb=$((disk_size_bytes / 1024 / 1024 / 1024))
 
-# Check if disk size is valid and set home_size_gb
+# Validate disk size and check if it's sufficient
 if (( disk_size_gb < (boot_size_gb + root_size_gb) )); then
   echo "Disk size too small. Cannot allocate the requested sizes for partitions."
   exit 1
 fi
 
-# Calculate remaining space for /home
+# Calculate home partition size based on remaining space
 home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
 
 # Calculate partition sizes in sectors
@@ -217,7 +219,7 @@ for i in {1..60}; do
   sleep 0.5
 done
 
-# If partitions are not detected within 30 seconds, exit with error
+# If partitions are not detected within 60 seconds, exit with error
 if [ ! -b "$boot_partition" ] || [ ! -b "$root_partition" ] || [ ! -b "$home_partition" ]; then
   echo "Error: Partitions not detected in time."
   exit 1
