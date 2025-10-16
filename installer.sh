@@ -7,7 +7,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# Ask function to handle user input
+# Prompt helpers
 ask() {
   local prompt="$1"
   local default="$2"
@@ -15,7 +15,6 @@ ask() {
   echo "${input:-$default}"
 }
 
-# Confirm function for destructive actions
 confirm() {
   local prompt="$1"
   local default="${2:-no}"
@@ -31,6 +30,7 @@ firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
 fi
+echo "Firmware detected: $firmware"
 
 # List available disks
 echo "Available disks:"
@@ -39,7 +39,7 @@ for disk_entry in "${disks[@]}"; do
   echo "  $disk_entry"
 done
 
-# Select disk
+# Disk selection
 default_disk="${disks[0]%% *}"
 disk_name=$(ask "Choose a disk to install" "$default_disk")
 disk="/dev/$disk_name"
@@ -49,78 +49,79 @@ if [[ ! -b "$disk" ]]; then
 fi
 confirm "This will erase all data on $disk. Continue?" "no"
 
-# Get disk size in GB
+# Hostname and username
+hostname=$(ask "Hostname" "artix")
+username=$(ask "Username" "user")
+
+# Timezone selection
+timezone=$(ask "Timezone" "America/New_York")
+
+# Partition sizing (flexible partitioning)
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
-# Calculate partition sizes dynamically based on disk size
-if (( disk_size_gb <= 20 )); then
-  boot_size="+500M"
-  root_size="+10G"
-  home_size="+5G"
-elif (( disk_size_gb <= 40 )); then
-  boot_size="+1G"
-  root_size="+20G"
-  home_size="+10G"
+# Set partition sizes based on disk size
+boot_size="1G"
+if (( disk_size_gb < 40 )); then
+  root_size=$(( disk_size_gb * 30 / 100 ))"G"  # 30% of disk size for small disks
 else
-  boot_size="+1G"
-  root_size="+30G"
-  home_size="+50G"
+  root_size="30G"  # 30GB for larger disks
 fi
 
-# Partitioning using fdisk
-echo "Wiping and partitioning $disk..."
+# Remaining space for /home
+remaining_size=$(( disk_size_gb - 1 - ${root_size%G} ))
+
+echo "Disk Size: $disk_size_gb GB"
+echo "Partitioning will be as follows:"
+echo "  /boot = $boot_size"
+echo "  / = $root_size"
+echo "  /home = ${remaining_size}G"
+
+# Wipe existing partition table
 wipefs -a "$disk"
 
-if [[ "$firmware" == "UEFI" ]]; then
-  table_type="g"  # GPT partition table for UEFI
-else
-  table_type="o"  # MBR partition table for BIOS
-fi
-
+# Partitioning with fdisk (creating a GPT partition table)
 {
-  echo "$table_type"
-  echo n; echo 1; echo; echo $boot_size   # Boot partition
-  echo n; echo 2; echo; echo $root_size   # Root partition
-  echo n; echo 3; echo; echo $home_size   # Home partition
-  [[ "$firmware" == "BIOS" ]] && echo a && echo 1  # Set boot flag if BIOS
-  echo w
+  echo g  # GPT partition table
+  echo n  # /boot partition
+  echo    # Partition number 1
+  echo    # Default start
+  echo +$boot_size  # Partition size
+  echo n  # / partition
+  echo    # Partition number 2
+  echo    # Default start
+  echo +$root_size  # Partition size
+  echo n  # /home partition
+  echo    # Partition number 3
+  echo    # Default start (use the remaining space)
+  echo w  # Write changes
 } | fdisk "$disk"
 
-# Partition device names
-part_prefix=""
-[[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
-
-boot_partition="${disk}${part_prefix}1"
-root_partition="${disk}${part_prefix}2"
-home_partition="${disk}${part_prefix}3"
-
-# Wait for partitions to appear
-for p in "$boot_partition" "$root_partition" "$home_partition"; do
-  while [ ! -b "$p" ]; do sleep 0.5; done
-done
+# Wait for partitions to be available
+sleep 2
 
 # Format partitions
-mkfs.fat -F32 "$boot_partition"
-mkfs.ext4 "$root_partition"
-mkfs.ext4 "$home_partition"
+mkfs.ext4 "${disk}1"  # /boot
+mkfs.ext4 "${disk}2"  # /
+mkfs.ext4 "${disk}3"  # /home
 
 # Mount partitions
-mount "$root_partition" /mnt
+mount "${disk}2" /mnt  # mount /
 mkdir -p /mnt/boot /mnt/home
-mount "$boot_partition" /mnt/boot
-mount "$home_partition" /mnt/home
+mount "${disk}1" /mnt/boot  # mount /boot
+mount "${disk}3" /mnt/home  # mount /home
 
-# Bind mount system dirs
+# Bind mount system directories
 for dir in dev proc sys run; do
   mkdir -p "/mnt/$dir"
   mount --bind "/$dir" "/mnt/$dir"
 done
 
-# Install base system
+# Install base system (customizable packages)
 base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
 [[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
 
+# Installing base system
 basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt > /mnt/etc/fstab
 
@@ -133,7 +134,6 @@ while true; do
 done
 
 # Prompt for user password
-username=$(ask "Username" "user")
 echo "Set password for user '$username':"
 while true; do
   read -s -p "User password: " userpass1; echo
