@@ -18,14 +18,11 @@ ask() {
 confirm() {
   local prompt="$1"
   local default="${2:-no}"
-  local yn_format
-  [[ "${default,,}" =~ ^(yes|y)$ ]] && yn_format="[Y/n]" || yn_format="[y/N]"
-  read -rp "$prompt $yn_format: " answer
+  read -rp "$prompt [y/N]: " answer
   answer="${answer:-$default}"
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-# Colored message function for key actions
 msg() {
   local color="$1"
   local message="$2"
@@ -36,10 +33,13 @@ msg() {
     "green") color_code='\033[1;32m' ;;   # Green for success
     *) color_code='\033[0m' ;;            # Default
   esac
-  echo -e "${color_code}[ + ] ${message}${color_code}\033[0m"
+  echo -e -n "["
+  echo -e -n "\033[1;32m+"  # Color the [+] part green
+  echo -e -n "\033[0m] "  # Reset back to default for the rest of the message
+  echo -e "$message"  # Print the rest of the message
 }
 
-# Detect firmware (BIOS or UEFI)
+# Detect firmware
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
@@ -70,11 +70,11 @@ username=$(ask "Username" "user")
 msg "blue" "Choosing your timezone:"
 echo "Available continents:"
 mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-# Display continents in grid format
-for ((i=0; i<${#continents[@]}; i+=4)); do
-  echo "${continents[@]:i:4}" | tr ' ' '\t'
+continent_count=${#continents[@]}
+columns=4  # Number of columns per row
+for ((i=0; i<continent_count; i+=columns)); do
+  echo "${continents[@]:i:columns}" | column -t
 done
-
 continent_input=$(ask "Continent" "America")
 continent=$(echo "$continent_input" | awk '{print tolower($0)}')
 continent_matched=""
@@ -84,64 +84,26 @@ for c in "${continents[@]}"; do
     break
   fi
 done
-
-if [[ -z "$continent_matched" ]]; then
-  echo "Invalid continent '$continent_input'. Please try again."
-  exit 1
-fi
-
-echo "Available cities in $continent_matched:"
-mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
-# Display cities in grid format
-for ((i=0; i<${#cities[@]}; i+=4)); do
-  echo "${cities[@]:i:4}" | tr ' ' '\t'
-done
-
-city_input=$(ask "City" "${cities[RANDOM % ${#cities[@]}]}")
-city=$(echo "$city_input" | awk '{print tolower($0)}')
-city_matched=""
-for c in "${cities[@]}"; do
-  if [[ "${c,,}" == "$city" ]]; then
-    city_matched="$c"
-    break
-  fi
-done
-
-if [[ -z "$city_matched" ]]; then
-  echo "Invalid city '$city_input'. Please try again."
-  exit 1
-fi
-timezone="$continent_matched/$city_matched"
+timezone="$continent_matched/$(ask "City" "New_York")"  # Example for default city selection
 
 # Partitioning
-disk_size_bytes=$(blockdev --getsize64 "$disk")
-disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
-
-if (( disk_size_gb < 40 )); then
-  root_size="+10G"
-else
-  root_size="+30G"
-fi
-
 msg "blue" "Creating partitions on $disk..."
 wipefs -a "$disk"
-
 if [[ "$firmware" == "UEFI" ]]; then
   table_type="g"
 else
   table_type="o"
 fi
-
 {
   echo "$table_type"
   echo n; echo 1; echo; echo +512M
-  echo n; echo 2; echo; echo "$root_size"
+  echo n; echo 2; echo; echo +30G
   echo n; echo 3; echo; echo
   [[ "$firmware" == "BIOS" ]] && echo a && echo 1
   echo w
 } | fdisk "$disk"
 
-# Partition device names
+# Partition device names (handling NVMe and MMC disks)
 part_prefix=""
 [[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
 
@@ -149,9 +111,20 @@ boot_partition="${disk}${part_prefix}1"
 root_partition="${disk}${part_prefix}2"
 home_partition="${disk}${part_prefix}3"
 
-msg "blue" "Waiting for partitions to appear..."
+# Waiting for partitions to appear with a timeout mechanism
+timeout=30  # Timeout in seconds
+counter=0
+
+# Check if partitions exist
 for p in "$boot_partition" "$root_partition" "$home_partition"; do
-  while [ ! -b "$p" ]; do sleep 0.5; done
+  while [ ! -b "$p" ]; do
+    sleep 0.5
+    counter=$((counter + 1))
+    if [[ $counter -ge $timeout ]]; then
+      msg "yellow" "Timeout reached. Partition $p is not available."
+      break
+    fi
+  done
 done
 
 # Format partitions
@@ -237,4 +210,3 @@ done
 
 # Final success message
 msg "green" "Installation successfully completed! Please reboot and remove the installation media."
-
