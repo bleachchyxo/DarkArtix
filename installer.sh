@@ -25,7 +25,7 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-# Detect firmware type
+# Firmware detection
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
@@ -39,7 +39,7 @@ for disk_entry in "${disks[@]}"; do
   echo "  $disk_entry"
 done
 
-# Choose disk
+# Select disk to install
 default_disk="${disks[0]%% *}"
 disk_name=$(ask "Choose a disk to install" "$default_disk")
 disk="/dev/$disk_name"
@@ -49,62 +49,17 @@ if [[ ! -b "$disk" ]]; then
 fi
 confirm "This will erase all data on $disk. Continue?" "no"
 
-# Hostname and username setup
-hostname=$(ask "Hostname" "artix")
-username=$(ask "Username" "user")
-
-# Timezone setup
-while true; do
-  echo "Available continents:"
-  mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-  for c in "${continents[@]}"; do echo "  $c"; done
-
-  continent_input=$(ask "Continent" "America")
-  continent=$(echo "$continent_input" | awk '{print tolower($0)}')
-  continent_matched=""
-  for c in "${continents[@]}"; do
-    if [[ "${c,,}" == "$continent" ]]; then
-      continent_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$continent_matched" ]]; then
-    echo "Invalid continent '$continent_input'. Please try again."
-    continue
-  fi
-
-  echo "Available cities in $continent_matched:"
-  mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
-
-  default_city="${cities[RANDOM % ${#cities[@]}]}"
-  for city in "${cities[@]}"; do echo "  $city"; done
-
-  city_input=$(ask "City" "$default_city")
-  city=$(echo "$city_input" | awk '{print tolower($0)}')
-  city_matched=""
-  for c in "${cities[@]}"; do
-    if [[ "${c,,}" == "$city" ]]; then
-      city_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$city_matched" ]]; then
-    echo "Invalid city '$city_input'. Please try again."
-    continue
-  fi
-  timezone="$continent_matched/$city_matched"
-  break
-done
-
-# Partition size logic based on disk size
+# Partition sizes
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 echo "Disk size: $disk_size_gb GB"
 
+# Default sizes for boot, root, and home partitions
 boot_size="1G"
 root_size="30G"
 home_size=$(( disk_size_gb - 31 ))"G"  # Remaining space for /home
 
+# If disk is smaller than 40GB, adjust partition sizes
 if (( disk_size_gb < 40 )); then
   root_size="10G"
   home_size="5G"
@@ -112,37 +67,35 @@ fi
 
 echo "Partition sizes: /boot = $boot_size, / = $root_size, /home = $home_size"
 
-# Partitioning with fdisk
-echo "Partitioning $disk..."
-
+# Partitioning using fdisk
+echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
 {
-  # Create GPT or MBR based on firmware
-  echo g  # GPT for UEFI (change to 'o' for MBR if BIOS)
+  echo g  # GPT partition table (use 'o' for MBR if BIOS)
   
-  # Create /boot partition
+  # /boot partition
   echo n
   echo p
   echo 1
   echo
   echo "$boot_size"
 
-  # Create / partition
+  # / partition
   echo n
   echo p
   echo 2
   echo
   echo "$root_size"
 
-  # Create /home partition
+  # /home partition
   echo n
   echo p
   echo 3
   echo
   echo "$home_size"
 
-  # Mark /boot as bootable (for BIOS only)
+  # Mark /boot as bootable for BIOS
   if [[ "$firmware" == "BIOS" ]]; then
     echo a
     echo 1
@@ -151,10 +104,12 @@ wipefs -a "$disk"
   echo w  # Write the changes
 } | fdisk "$disk"
 
-# Wait for partitions to appear
+# Wait for partitions to appear (improved method)
 echo "Waiting for partitions to appear..."
 for part in "$disk"1 "$disk"2 "$disk"3; do
-  while [ ! -b "$part" ]; do sleep 0.5; done
+  while [ ! -b "$part" ]; do
+    sleep 1
+  done
 done
 
 # Format partitions
@@ -190,6 +145,7 @@ while true; do
 done
 
 # Set user password
+username=$(ask "Username" "user")
 echo "Set password for user '$username':"
 while true; do
   read -s -p "User password: " userpass1; echo
