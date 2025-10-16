@@ -53,75 +53,81 @@ hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
 # Timezone selection
-while true; do
-  echo "Available continents:"
-  mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-  for c in "${continents[@]}"; do echo "  $c"; done
+continent_input=$(ask "Continent" "America")
+continent=$(echo "$continent_input" | awk '{print tolower($0)}')
+city_input=$(ask "City" "New_York")
+timezone="$continent/$city_input"
 
-  continent_input=$(ask "Continent" "America")
-  continent=$(echo "$continent_input" | awk '{print tolower($0)}')
-  continent_matched=""
-  for c in "${continents[@]}"; do
-    if [[ "${c,,}" == "$continent" ]]; then
-      continent_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$continent_matched" ]]; then
-    echo "Invalid continent '$continent_input'. Please try again."
-    continue
-  fi
+# Partition sizes
+boot_size_mib=512
+sector_size=$(blockdev --getss "$disk")
+total_sectors=$(blockdev --getsz "$disk")
+boot_size_sectors=$(( boot_size_mib * 1024 * 1024 / sector_size ))
 
-  echo "Available cities in $continent_matched:"
-  mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
+remaining_sectors=$(( total_sectors - boot_size_sectors ))
 
-  # Pick a random default city
-  default_city="${cities[RANDOM % ${#cities[@]}]}"
-  for city in "${cities[@]}"; do echo "  $city"; done
+# Split remaining sectors: 75% root, 25% home
+root_size_sectors=$(( remaining_sectors * 75 / 100 ))
+home_size_sectors=$(( remaining_sectors - root_size_sectors ))
 
-  city_input=$(ask "City" "$default_city")
-  city=$(echo "$city_input" | awk '{print tolower($0)}')
-  city_matched=""
-  for c in "${cities[@]}"; do
-    if [[ "${c,,}" == "$city" ]]; then
-      city_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$city_matched" ]]; then
-    echo "Invalid city '$city_input'. Please try again."
-    continue
-  fi
-  timezone="$continent_matched/$city_matched"
-  break
-done
+# Partition start and end sectors (start at sector 2048 for alignment)
+part1_start=2048
+part1_end=$(( part1_start + boot_size_sectors - 1 ))
 
-# Partition sizing
-disk_size_bytes=$(blockdev --getsize64 "$disk")
-disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
+part2_start=$(( part1_end + 1 ))
+part2_end=$(( part2_start + root_size_sectors - 1 ))
 
-if (( disk_size_gb < 40 )); then
-  root_size="+10G"
-else
-  root_size="+30G"
+part3_start=$(( part2_end + 1 ))
+part3_end=$(( part3_start + home_size_sectors - 1 ))
+
+# Safety check to not exceed disk size
+if (( part3_end > total_sectors )); then
+  part3_end=$(( total_sectors - 1 ))
 fi
 
-echo "Wiping and partitioning $disk..."
+echo "Partition layout:"
+echo "/boot   : sectors $part1_start - $part1_end (~$boot_size_mib MiB)"
+echo "/       : sectors $part2_start - $part2_end (~$((root_size_sectors * sector_size / 1024 / 1024)) MiB)"
+echo "/home   : sectors $part3_start - $part3_end (~$((home_size_sectors * sector_size / 1024 / 1024)) MiB)"
+
+# Wipe existing data and partition
 wipefs -a "$disk"
 
 # Partitioning using fdisk
-if [[ "$firmware" == "UEFI" ]]; then
-  table_type="g"
-else
-  table_type="o"
-fi
-
 {
-  echo "$table_type"
-  echo n; echo 1; echo; echo +512M
-  echo n; echo 2; echo; echo "$root_size"
-  echo n; echo 3; echo; echo
-  [[ "$firmware" == "BIOS" ]] && echo a && echo 1
+  if [[ "$firmware" == "UEFI" ]]; then
+    echo g
+  else
+    echo o
+  fi
+
+  # /boot
+  echo n
+  echo p
+  echo 1
+  echo $part1_start
+  echo $part1_end
+
+  # /
+  echo n
+  echo p
+  echo 2
+  echo $part2_start
+  echo $part2_end
+
+  # /home
+  echo n
+  echo p
+  echo 3
+  echo $part3_start
+  echo $part3_end
+
+  # Mark bootable if BIOS
+  if [[ "$firmware" == "BIOS" ]]; then
+    echo a
+    echo 1
+  fi
+
   echo w
 } | fdisk "$disk"
 
@@ -133,17 +139,16 @@ boot_partition="${disk}${part_prefix}1"
 root_partition="${disk}${part_prefix}2"
 home_partition="${disk}${part_prefix}3"
 
-echo "Waiting for partitions to appear..."
-for p in "$boot_partition" "$root_partition" "$home_partition"; do
-  while [ ! -b "$p" ]; do sleep 0.5; done
+# Wait for partitions to appear
+for i in {1..60}; do
+  if [ -b "$boot_partition" ] && [ -b "$root_partition" ] && [ -b "$home_partition" ]; then
+    break
+  fi
+  sleep 0.5
 done
 
 # Format partitions
-if [[ "$firmware" == "UEFI" ]]; then
-  mkfs.fat -F32 "$boot_partition"
-else
-  mkfs.ext4 "$boot_partition"
-fi
+mkfs.ext4 "$boot_partition"
 mkfs.ext4 "$root_partition"
 mkfs.ext4 "$home_partition"
 
@@ -160,13 +165,11 @@ for dir in dev proc sys run; do
 done
 
 # Install base system
-base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
-[[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
-
+base_packages=(base base-devel linux linux-firmware neovim networkmanager grub efibootmgr)
 basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# Prompt for root password
+# Set root password
 echo "Set root password:"
 while true; do
   read -s -p "Root password: " rootpass1; echo
@@ -174,7 +177,7 @@ while true; do
   [[ "$rootpass1" == "$rootpass2" && -n "$rootpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
 done
 
-# Prompt for user password
+# Set user password
 echo "Set password for user '$username':"
 while true; do
   read -s -p "User password: " userpass1; echo
@@ -197,30 +200,36 @@ echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
 useradd -m -G wheel "$username"
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
+ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default
 
+# Install GRUB (depending on firmware)
 if [[ "$firmware" == "UEFI" ]]; then
-  # Install grub for UEFI systems
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
-  # Install grub for BIOS systems
   grub-install --target=i386-pc "$disk"
 fi
 
-# Regenerate grub config
 grub-mkconfig -o /boot/grub/grub.cfg
 
+# Set passwords
 echo "root:$rootpass1" | chpasswd
 echo "$username:$userpass1" | chpasswd
 EOF
-
-# Cleanup sensitive variables
-unset rootpass1 rootpass2 userpass1 userpass2
 
 # Unmount system dirs
 for dir in dev proc sys run; do
   umount -l "/mnt/$dir"
 done
 
-echo
-echo "Installation complete. Please reboot and remove the installation media."
+# Unmount partitions
+umount -l /mnt/home /mnt/boot /mnt
+
+# Exit chroot and reboot
+echo "System setup complete. You can now reboot."
+echo "Type 'exit' to leave chroot and reboot."
+
+# Final reminder to the user
+echo "Remember to remove the installation media (USB/DVD) before rebooting."
+
+exit
+
