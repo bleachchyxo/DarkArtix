@@ -7,30 +7,11 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# Prompt helpers
-ask() {
-  local prompt="$1"
-  local default="$2"
-  read -rp "$prompt [$default]: " input
-  echo "${input:-$default}"
-}
-
-confirm() {
-  local prompt="$1"
-  local default="${2:-no}"
-  local yn_format
-  [[ "${default,,}" =~ ^(yes|y)$ ]] && yn_format="[Y/n]" || yn_format="[y/N]"
-  read -rp "$prompt $yn_format: " answer
-  answer="${answer:-$default}"
-  [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
-}
-
-# Firmware detection
+# Detect firmware
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
 fi
-echo "Firmware detected: $firmware"
 
 # List available disks
 echo "Available disks:"
@@ -39,7 +20,7 @@ for disk_entry in "${disks[@]}"; do
   echo "  $disk_entry"
 done
 
-# Select disk to install
+# Select disk
 default_disk="${disks[0]%% *}"
 disk_name=$(ask "Choose a disk to install" "$default_disk")
 disk="/dev/$disk_name"
@@ -49,79 +30,67 @@ if [[ ! -b "$disk" ]]; then
 fi
 confirm "This will erase all data on $disk. Continue?" "no"
 
-# Partition sizes
+# Get disk size in GB
 disk_size_bytes=$(blockdev --getsize64 "$disk")
 disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
-echo "Disk size: $disk_size_gb GB"
 
-# Default sizes for boot, root, and home partitions
-boot_size="1G"
-root_size="30G"
-home_size=$(( disk_size_gb - 31 ))"G"  # Remaining space for /home
-
-# If disk is smaller than 40GB, adjust partition sizes
-if (( disk_size_gb < 40 )); then
-  root_size="10G"
-  home_size="5G"
+# Calculate partition sizes based on disk size
+if (( disk_size_gb <= 20 )); then
+  boot_size="+500M"
+  root_size="+12G"
+  home_size="+6G"
+elif (( disk_size_gb <= 40 )); then
+  boot_size="+1G"
+  root_size="+20G"
+  home_size="+10G"
+else
+  boot_size="+1G"
+  root_size="+30G"
+  home_size="+50G"
 fi
-
-echo "Partition sizes: /boot = $boot_size, / = $root_size, /home = $home_size"
 
 # Partitioning using fdisk
 echo "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
+if [[ "$firmware" == "UEFI" ]]; then
+  table_type="g"
+else
+  table_type="o"
+fi
+
 {
-  echo g  # GPT partition table (use 'o' for MBR if BIOS)
-  
-  # /boot partition
-  echo n
-  echo p
-  echo 1
-  echo
-  echo "$boot_size"
-
-  # / partition
-  echo n
-  echo p
-  echo 2
-  echo
-  echo "$root_size"
-
-  # /home partition
-  echo n
-  echo p
-  echo 3
-  echo
-  echo "$home_size"
-
-  # Mark /boot as bootable for BIOS
-  if [[ "$firmware" == "BIOS" ]]; then
-    echo a
-    echo 1
-  fi
-
-  echo w  # Write the changes
+  echo "$table_type"
+  echo n; echo 1; echo; echo $boot_size  # Boot partition
+  echo n; echo 2; echo; echo $root_size  # Root partition
+  echo n; echo 3; echo; echo $home_size  # Home partition
+  [[ "$firmware" == "BIOS" ]] && echo a && echo 1  # Set boot flag if BIOS
+  echo w
 } | fdisk "$disk"
 
-# Wait for partitions to appear (improved method)
-echo "Waiting for partitions to appear..."
-for part in "$disk"1 "$disk"2 "$disk"3; do
-  while [ ! -b "$part" ]; do
-    sleep 1
-  done
+# Partition device names
+part_prefix=""
+[[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
+
+boot_partition="${disk}${part_prefix}1"
+root_partition="${disk}${part_prefix}2"
+home_partition="${disk}${part_prefix}3"
+
+# Wait for partitions to appear
+for p in "$boot_partition" "$root_partition" "$home_partition"; do
+  while [ ! -b "$p" ]; do sleep 0.5; done
 done
 
 # Format partitions
-mkfs.ext4 "$disk"1
-mkfs.ext4 "$disk"2
-mkfs.ext4 "$disk"3
+mkfs.fat -F32 "$boot_partition"
+mkfs.ext4 "$root_partition"
+mkfs.ext4 "$home_partition"
 
 # Mount partitions
-mount "$disk"2 /mnt
+mount "$root_partition" /mnt
 mkdir -p /mnt/boot /mnt/home
-mount "$disk"1 /mnt/boot
-mount "$disk"3 /mnt/home
+mount "$boot_partition" /mnt/boot
+mount "$home_partition" /mnt/home
 
 # Bind mount system dirs
 for dir in dev proc sys run; do
@@ -136,7 +105,7 @@ base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim n
 basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt > /mnt/etc/fstab
 
-# Set root password
+# Prompt for root password
 echo "Set root password:"
 while true; do
   read -s -p "Root password: " rootpass1; echo
@@ -144,8 +113,7 @@ while true; do
   [[ "$rootpass1" == "$rootpass2" && -n "$rootpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
 done
 
-# Set user password
-username=$(ask "Username" "user")
+# Prompt for user password
 echo "Set password for user '$username':"
 while true; do
   read -s -p "User password: " userpass1; echo
@@ -185,7 +153,10 @@ EOF
 # Cleanup sensitive variables
 unset rootpass1 rootpass2 userpass1 userpass2
 
-# Unmount partitions and finish
-umount -R /mnt
+# Unmount system dirs
+for dir in dev proc sys run; do
+  umount -l "/mnt/$dir"
+done
 
+echo
 echo "Installation complete. Please reboot and remove the installation media."
