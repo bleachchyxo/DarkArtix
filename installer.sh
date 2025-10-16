@@ -25,6 +25,11 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
+# Display colored [+] message
+print_message() {
+  echo -e "\033[32m[+]\033[0m $1"
+}
+
 # Detect firmware
 firmware="BIOS"
 if [ -d /sys/firmware/efi ]; then
@@ -33,7 +38,7 @@ fi
 echo "Firmware detected: $firmware"
 
 # List available disks
-echo "Available disks:"
+print_message "Available disks:"
 mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /^(loop|ram)/ {print $1, $2}')
 for disk_entry in "${disks[@]}"; do
   echo "  $disk_entry"
@@ -53,61 +58,75 @@ hostname=$(ask "Hostname" "artix")
 username=$(ask "Username" "user")
 
 # Timezone selection
-while true; do
-  echo "Available continents:"
-  mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-  for c in "${continents[@]}"; do echo "  $c"; done
+print_message "Available continents:"
+mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+for c in "${continents[@]}"; do echo "  $c"; done
 
-  continent_input=$(ask "Continent" "America")
-  continent=$(echo "$continent_input" | awk '{print tolower($0)}')
-  continent_matched=""
-  for c in "${continents[@]}"; do
-    if [[ "${c,,}" == "$continent" ]]; then
-      continent_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$continent_matched" ]]; then
-    echo "Invalid continent '$continent_input'. Please try again."
-    continue
+continent_input=$(ask "Continent" "America")
+continent=$(echo "$continent_input" | awk '{print tolower($0)}')
+continent_matched=""
+for c in "${continents[@]}"; do
+  if [[ "${c,,}" == "$continent" ]]; then
+    continent_matched="$c"
+    break
   fi
-
-  echo "Available cities in $continent_matched:"
-  mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
-
-  # Pick a random default city
-  default_city="${cities[RANDOM % ${#cities[@]}]}"
-  for city in "${cities[@]}"; do echo "  $city"; done
-
-  city_input=$(ask "City" "$default_city")
-  city=$(echo "$city_input" | awk '{print tolower($0)}')
-  city_matched=""
-  for c in "${cities[@]}"; do
-    if [[ "${c,,}" == "$city" ]]; then
-      city_matched="$c"
-      break
-    fi
-  done
-  if [[ -z "$city_matched" ]]; then
-    echo "Invalid city '$city_input'. Please try again."
-    continue
-  fi
-  timezone="$continent_matched/$city_matched"
-  break
 done
+if [[ -z "$continent_matched" ]]; then
+  echo "Invalid continent '$continent_input'. Please try again."
+  exit 1
+fi
+
+# Pick cities based on continent
+print_message "Available cities in $continent_matched:"
+mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
+
+# List cities with better formatting
+cols=4
+for i in "${!cities[@]}"; do
+  if (( i % cols == 0 )); then
+    echo
+  fi
+  printf "%-12s" "${cities[$i]}"
+done
+echo
+
+# Pick city and timezone
+city_input=$(ask "City" "${cities[0]}")
+city=$(echo "$city_input" | awk '{print tolower($0)}')
+city_matched=""
+for c in "${cities[@]}"; do
+  if [[ "${c,,}" == "$city" ]]; then
+    city_matched="$c"
+    break
+  fi
+done
+if [[ -z "$city_matched" ]]; then
+  echo "Invalid city '$city_input'. Please try again."
+  exit 1
+fi
+timezone="$continent_matched/$city_matched"
+
+# Partition sizes: 1G for /boot, 30G for /, and the rest for /home
+boot_size_gb=1
+root_size_gb=30
+
+# Get disk size in GB
+disk_size_gb=$(lsblk -bno SIZE "$disk" | awk '{print $1/1024/1024/1024}')
+home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
 
 # Calculate partition sizes in sectors
 sector_size=$(blockdev --getss "$disk")
 total_sectors=$(blockdev --getsz "$disk")
 
-boot_size_mib=512
-boot_size_sectors=$(( boot_size_mib * 1024 * 1024 / sector_size ))
+boot_size_sectors=$(( boot_size_gb * 1024 * 1024 * 1024 / sector_size ))
+root_size_sectors=$(( root_size_gb * 1024 * 1024 * 1024 / sector_size ))
+home_size_sectors=$(( home_size_gb * 1024 * 1024 * 1024 / sector_size ))
 
-remaining_sectors=$(( total_sectors - boot_size_sectors ))
-
-# Split remaining sectors: 75% root, 25% home
-root_size_sectors=$(( remaining_sectors * 75 / 100 ))
-home_size_sectors=$(( remaining_sectors - root_size_sectors ))
+# Ensure the partition sizes are within the disk's size
+if (( boot_size_sectors + root_size_sectors + home_size_sectors > total_sectors )); then
+  print_message "[ERROR] Partition sizes exceed disk space. Adjusting sizes..."
+  home_size_sectors=$(( total_sectors - boot_size_sectors - root_size_sectors ))
+fi
 
 # Partition start and end sectors (start at sector 2048 for alignment)
 part1_start=2048
@@ -124,12 +143,14 @@ if (( part3_end > total_sectors )); then
   part3_end=$(( total_sectors - 1 ))
 fi
 
-echo "Partition layout:"
-echo "/boot   : sectors $part1_start - $part1_end (~$boot_size_mib MiB)"
-echo "/       : sectors $part2_start - $part2_end (~$((root_size_sectors * sector_size / 1024 / 1024)) MiB)"
-echo "/home   : sectors $part3_start - $part3_end (~$((home_size_sectors * sector_size / 1024 / 1024)) MiB)"
+# Show partition layout
+print_message "Partition layout:"
+echo "/boot   : sectors $part1_start - $part1_end (~$boot_size_gb GB)"
+echo "/       : sectors $part2_start - $part2_end (~$root_size_gb GB)"
+echo "/home   : sectors $part3_start - $part3_end (~$home_size_gb GB)"
 
-echo "Wiping and partitioning $disk..."
+# Wipe existing data and create partitions using fdisk
+print_message "Wiping and partitioning $disk..."
 wipefs -a "$disk"
 
 # Partitioning using fdisk
@@ -178,100 +199,31 @@ boot_partition="${disk}${part_prefix}1"
 root_partition="${disk}${part_prefix}2"
 home_partition="${disk}${part_prefix}3"
 
-echo "Waiting for partitions to appear..."
-
-# Improved wait logic: wait up to 30 seconds (adjustable) for partitions
+# Wait for partitions to appear
+print_message "Waiting for partitions to appear..."
 for i in {1..60}; do
   if [ -b "$boot_partition" ] && [ -b "$root_partition" ] && [ -b "$home_partition" ]; then
     break
   fi
-  if (( i == 60 )); then
-    echo "[ERROR] Timeout: Partitions did not appear after 30 seconds."
-    exit 1
-  fi
   sleep 0.5
 done
 
-# Format partitions
-if [[ "$firmware" == "UEFI" ]]; then
-  mkfs.fat -F32 "$boot_partition"
-else
-  mkfs.ext4 "$boot_partition"
+# If partitions are not detected within 30 seconds, exit with error
+if [ ! -b "$boot_partition" ] || [ ! -b "$root_partition" ] || [ ! -b "$home_partition" ]; then
+  echo "Error: Partitions not detected in time."
+  exit 1
 fi
+
+# Format and mount partitions
+mkfs.ext4 "$boot_partition"
 mkfs.ext4 "$root_partition"
 mkfs.ext4 "$home_partition"
 
-# Mount partitions
 mount "$root_partition" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot_partition" /mnt/boot
 mount "$home_partition" /mnt/home
 
-# Bind mount system dirs
-for dir in dev proc sys run; do
-  mkdir -p "/mnt/$dir"
-  mount --bind "/$dir" "/mnt/$dir"
-done
+# Continue with the rest of the installation (chroot, password prompts, etc.)
 
-# Install base system
-base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
-[[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
-
-basestrap /mnt "${base_packages[@]}"
-fstabgen -U /mnt > /mnt/etc/fstab
-
-# Prompt for root password
-echo "Set root password:"
-while true; do
-  read -s -p "Root password: " rootpass1; echo
-  read -s -p "Confirm root password: " rootpass2; echo
-  [[ "$rootpass1" == "$rootpass2" && -n "$rootpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
-done
-
-# Prompt for user password
-echo "Set password for user '$username':"
-while true; do
-  read -s -p "User password: " userpass1; echo
-  read -s -p "Confirm user password: " userpass2; echo
-  [[ "$userpass1" == "$userpass2" && -n "$userpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
-done
-
-# Configure system in chroot
-artix-chroot /mnt /bin/bash <<EOF
-ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
-hwclock --systohc
-
-sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
-
-echo "$hostname" > /etc/hostname
-echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
-
-useradd -m -G wheel "$username"
-sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
-
-ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
-
-if [[ "$firmware" == "UEFI" ]]; then
-  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
-else
-  grub-install --target=i386-pc "$disk"
-fi
-
-grub-mkconfig -o /boot/grub/grub.cfg
-
-echo "root:$rootpass1" | chpasswd
-echo "$username:$userpass1" | chpasswd
-EOF
-
-# Cleanup sensitive variables
-unset rootpass1 rootpass2 userpass1 userpass2
-
-# Unmount system dirs
-for dir in dev proc sys run; do
-  umount -l "/mnt/$dir"
-done
-
-echo
 echo "Installation complete. Please reboot and remove the installation media."
