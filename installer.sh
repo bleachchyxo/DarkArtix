@@ -113,6 +113,12 @@ root_size_gb=30
 # Get disk size in GB and convert to integer (fixing the non-integer problem)
 disk_size_gb=$(lsblk -bno SIZE "$disk" | awk '{print int($1/1024/1024/1024)}')
 
+# Ensure disk_size_gb is a positive integer
+if (( disk_size_gb <= 0 )); then
+  echo "Error: Invalid disk size $disk_size_gb. The disk size is too small."
+  exit 1
+fi
+
 # Calculate remaining space for /home
 home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
 
