@@ -198,7 +198,7 @@ mount "$home_partition" /mnt/home
 
 # Base system
 print_message "Installing base system..."
-basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
+basestrap /mnt base base-devel runit elogind-runit linux linux-firmware networkmanager networkmanager-runit neovim
 
 print_message "Generating fstab..."
 fstabgen -U /mnt >> /mnt/etc/fstab
@@ -209,15 +209,21 @@ artix-chroot /mnt <<EOF
 ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
 hwclock --systohc
 
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
+sed -i 's/^#en_US ISO-8859-1/en_US ISO-8859-1/' /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
 echo "$hostname" > /etc/hostname
-echo -e "127.0.0.1\tlocalhost\n::1\tlocalhost\n127.0.1.1\t$hostname.localdomain\t$hostname" > /etc/hosts
+echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
 
 pacman -S --noconfirm networkmanager networkmanager-runit
 ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
+
+useradd -m -G wheel "$username"
+sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+
+ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
 
 if [[ "$firmware" == "UEFI" ]]; then
   pacman -S --noconfirm grub efibootmgr
@@ -229,16 +235,17 @@ fi
 
 grub-mkconfig -o /boot/grub/grub.cfg
 
-echo "Please set the root password:"
-passwd
-
-echo "Creating user $username..."
-useradd -m -G wheel "$username"
-echo "Set password for $username:"
-passwd "$username"
-
-ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
-exit
+echo "root:$rootpass1" | chpasswd
+echo "$username:$userpass1" | chpasswd
 EOF
 
-print_message "Installation complete. Please reboot and remove the installation media."
+# Cleanup sensitive variables
+unset rootpass1 rootpass2 userpass1 userpass2
+
+# Unmount system dirs
+for dir in dev proc sys run; do
+  umount -l "/mnt/$dir"
+done
+
+echo
+echo "Installation complete. Please reboot and remove the installation media."
