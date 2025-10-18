@@ -255,11 +255,16 @@ fi
 
 grub-mkconfig -o /boot/grub/grub.cfg
 
-echo "root:$rootpass1" | chpasswd
-echo "$username:$userpass1" | chpasswd
+# Chroot setup (heredoc still fine for static content)
+artix-chroot /mnt <<EOF
+# system setup...
 EOF
 
-# Cleanup sensitive variables
+# Set passwords separately for safety
+echo "root:$rootpass1" | artix-chroot /mnt chpasswd
+echo "$username:$userpass1" | artix-chroot /mnt chpasswd
+
+# Clear sensitive variables
 unset rootpass1 rootpass2 userpass1 userpass2
 
 # Unmount system dirs
