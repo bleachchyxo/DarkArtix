@@ -113,8 +113,13 @@ print_message "Disabling any swap on $disk..."
 swapoff -a 2>/dev/null || true
 
 print_message "Inform kernel of partition changes..."
-partprobe "$disk"
-sleep 1
+# Try to notify kernel about partition table changes
+if command -v blockdev >/dev/null 2>&1; then
+  blockdev --rereadpt "$disk" || true
+fi
+
+# Wait a bit for the kernel to catch up
+sleep 2
 
 print_message "Wiping and partitioning $disk..."
 wipefs -a "$disk"
