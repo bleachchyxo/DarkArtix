@@ -280,10 +280,11 @@ echo "$username:$userpass1" | artix-chroot /mnt chpasswd
 # Cleanup sensitive variables
 unset rootpass1 rootpass2 userpass1 userpass2
 
-# Unmount system dirs
+# Unmount system dirs (only if mounted)
 for dir in dev proc sys run; do
-  umount -l "/mnt/$dir"
+  mountpoint -q "/mnt/$dir" && umount -l "/mnt/$dir"
 done
 
+sync
 echo
 echo "Installation complete. Please reboot and remove the installation media."
