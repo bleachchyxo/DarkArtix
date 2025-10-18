@@ -223,6 +223,22 @@ basestrap /mnt base base-devel runit elogind-runit linux linux-firmware networkm
 print_message "Generating fstab..."
 fstabgen -U /mnt >> /mnt/etc/fstab
 
+# Prompt for root password
+echo "Set root password:"
+while true; do
+  read -rsp "Root password: " rootpass1; echo
+  read -rsp "Confirm root password: " rootpass2; echo
+  [[ "$rootpass1" == "$rootpass2" ]] && break || echo "Passwords do not match. Try again."
+done
+
+# Prompt for user password
+echo "Set password for user: $username"
+while true; do
+  read -rsp "User password: " userpass1; echo
+  read -rsp "Confirm user password: " userpass2; echo
+  [[ "$userpass1" == "$userpass2" ]] && break || echo "Passwords do not match. Try again."
+done
+
 # Chroot setup
 print_message "Chrooting into system..."
 artix-chroot /mnt <<EOF
@@ -256,8 +272,8 @@ fi
 grub-mkconfig -o /boot/grub/grub.cfg
 EOF
 
+# Set root and user passwords
 print_message "Setting passwords..."
-
 echo "root:$rootpass1" | artix-chroot /mnt chpasswd
 echo "$username:$userpass1" | artix-chroot /mnt chpasswd
 
