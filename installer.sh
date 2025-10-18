@@ -25,7 +25,6 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-# Display colored [+] message
 print_message() {
   echo -e "\033[32m[+]\033[0m $1"
 }
@@ -76,21 +75,15 @@ if [[ -z "$continent_matched" ]]; then
   exit 1
 fi
 
-# Pick cities based on continent
 print_message "Available cities in $continent_matched:"
 mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
-
-# List cities with better formatting (one more space apart)
 cols=4
 for i in "${!cities[@]}"; do
-  if (( i % cols == 0 )); then
-    echo
-  fi
-  printf "%-15s" "${cities[$i]}"  # Adding extra space for better separation
+  if (( i % cols == 0 )); then echo; fi
+  printf "%-15s" "${cities[$i]}"
 done
 echo
 
-# Pick city and timezone
 city_input=$(ask "City" "${cities[0]}")
 city=$(echo "$city_input" | awk '{print tolower($0)}')
 city_matched=""
@@ -106,29 +99,41 @@ if [[ -z "$city_matched" ]]; then
 fi
 timezone="$continent_matched/$city_matched"
 
-# Partition sizes: 1G for /boot, 30G for /, and the rest for /home
+# Ask for root password
+while true; do
+  read -rsp "Set root password: " rootpass1; echo
+  read -rsp "Confirm root password: " rootpass2; echo
+  [[ "$rootpass1" == "$rootpass2" ]] && break || echo "Passwords do not match. Try again."
+done
+
+# Ask for user password
+while true; do
+  read -rsp "Set password for $username: " userpass1; echo
+  read -rsp "Confirm password: " userpass2; echo
+  [[ "$userpass1" == "$userpass2" ]] && break || echo "Passwords do not match. Try again."
+done
+
+# Partitioning logic
 boot_size_gb=1
-root_size_gb=30
+target_root_size_gb=30
 
-# Get disk size in GB and convert to integer (fixing the non-integer problem)
-disk_size_gb=$(lsblk -bno SIZE "$disk" | awk '{print int($1/1024/1024/1024)}')
+disk_size_bytes=$(blockdev --getsize64 "$disk")
+disk_size_gb=$(( disk_size_bytes / 1024 / 1024 / 1024 ))
 
-# Ensure disk_size_gb is a positive integer
-if (( disk_size_gb <= 0 )); then
-  echo "Error: Invalid disk size $disk_size_gb. The disk size is too small."
+min_disk_required=$(( boot_size_gb + 5 ))
+if (( disk_size_gb < min_disk_required )); then
+  echo "Error: Disk size ($disk_size_gb GB) is too small. Minimum required: ${min_disk_required}GB."
   exit 1
 fi
 
-# Calculate remaining space for /home
-home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
-
-# Ensure home_size_gb is non-negative, in case the disk is too small
-if (( home_size_gb <= 0 )); then
-  echo "Warning: Not enough space for all partitions. Adjusting /home size to use remaining space."
-  home_size_gb=1  # At least 1GB for /home
+if (( disk_size_gb < boot_size_gb + target_root_size_gb + 1 )); then
+  root_size_gb=$(( disk_size_gb / 2 ))
+  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
+else
+  root_size_gb=$target_root_size_gb
+  home_size_gb=$(( disk_size_gb - boot_size_gb - root_size_gb ))
 fi
 
-# Calculate partition sizes in sectors
 sector_size=$(blockdev --getss "$disk")
 total_sectors=$(blockdev --getsz "$disk")
 
@@ -136,140 +141,79 @@ boot_size_sectors=$(( boot_size_gb * 1024 * 1024 * 1024 / sector_size ))
 root_size_sectors=$(( root_size_gb * 1024 * 1024 * 1024 / sector_size ))
 home_size_sectors=$(( home_size_gb * 1024 * 1024 * 1024 / sector_size ))
 
-# Ensure the partition sizes are within the disk's size
-if (( boot_size_sectors + root_size_sectors + home_size_sectors > total_sectors )); then
-  print_message "[ERROR] Partition sizes exceed disk space. Adjusting sizes..."
-  home_size_sectors=$(( total_sectors - boot_size_sectors - root_size_sectors ))
-fi
-
-# Partition start and end sectors (start at sector 2048 for alignment)
 part1_start=2048
 part1_end=$(( part1_start + boot_size_sectors - 1 ))
-
 part2_start=$(( part1_end + 1 ))
 part2_end=$(( part2_start + root_size_sectors - 1 ))
-
 part3_start=$(( part2_end + 1 ))
-part3_end=$(( part3_start + home_size_sectors - 1 ))
+part3_end=$(( total_sectors - 1 ))
 
-# Safety check to not exceed disk size
-if (( part3_end > total_sectors )); then
-  part3_end=$(( total_sectors - 1 ))
-fi
-
-# Show partition layout
 print_message "Partition layout:"
-echo "/boot   : sectors $part1_start - $part1_end (~$boot_size_gb GB)"
-echo "/       : sectors $part2_start - $part2_end (~$root_size_gb GB)"
-echo "/home   : sectors $part3_start - $part3_end (~$home_size_gb GB)"
+echo "/boot   : ${boot_size_gb}G (sectors $part1_start - $part1_end)"
+echo "/       : ${root_size_gb}G (sectors $part2_start - $part2_end)"
+echo "/home   : ${home_size_gb}G (sectors $part3_start - $part3_end)"
 
-# Wipe existing data and create partitions using fdisk
 print_message "Wiping and partitioning $disk..."
 wipefs -a "$disk"
-
-# Partitioning using fdisk
 {
-  if [[ "$firmware" == "UEFI" ]]; then
-    echo g
-  else
-    echo o
-  fi
-
-  # /boot
-  echo n
-  echo p
-  echo 1
-  echo $part1_start
-  echo $part1_end
-
-  # /
-  echo n
-  echo p
-  echo 2
-  echo $part2_start
-  echo $part2_end
-
-  # /home
-  echo n
-  echo p
-  echo 3
-  echo $part3_start
-  echo $part3_end
-
-  # Mark bootable if BIOS
-  if [[ "$firmware" == "BIOS" ]]; then
-    echo a
-    echo 1
-  fi
-
+  [[ "$firmware" == "UEFI" ]] && echo g || echo o
+  echo n; echo p; echo 1; echo $part1_start; echo $part1_end
+  echo n; echo p; echo 2; echo $part2_start; echo $part2_end
+  echo n; echo p; echo 3; echo $part3_start; echo $part3_end
+  [[ "$firmware" == "BIOS" ]] && echo a && echo 1
   echo w
 } | fdisk "$disk"
 
-# Partition device names
 part_prefix=""
 [[ "$disk" =~ nvme || "$disk" =~ mmcblk ]] && part_prefix="p"
-
 boot_partition="${disk}${part_prefix}1"
 root_partition="${disk}${part_prefix}2"
 home_partition="${disk}${part_prefix}3"
 
-# Wait for partitions to appear
-print_message "Waiting for partitions to appear..."
+print_message "Waiting for partitions..."
 for i in {1..60}; do
-  if [ -b "$boot_partition" ] && [ -b "$root_partition" ] && [ -b "$home_partition" ]; then
-    break
-  fi
+  [[ -b "$boot_partition" && -b "$root_partition" && -b "$home_partition" ]] && break
   sleep 0.5
 done
 
-# If partitions are not detected within 30 seconds, exit with error
-if [ ! -b "$boot_partition" ] || [ ! -b "$root_partition" ] || [ ! -b "$home_partition" ]; then
-  echo "Error: Partitions not detected in time."
-  exit 1
-fi
+[[ ! -b "$boot_partition" || ! -b "$root_partition" || ! -b "$home_partition" ]] && {
+  echo "Error: Partitions not detected."; exit 1;
+}
 
-# Format and mount partitions
 print_message "Formatting partitions..."
 mkfs.ext4 "$boot_partition"
 mkfs.ext4 "$root_partition"
 mkfs.ext4 "$home_partition"
 
-# Mount partitions
 print_message "Mounting partitions..."
 mount "$root_partition" /mnt
 mkdir -p /mnt/boot /mnt/home
 mount "$boot_partition" /mnt/boot
 mount "$home_partition" /mnt/home
-# Installing the base system
+
 print_message "Installing base system..."
 basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
 
-# Generating fstab
 print_message "Generating fstab..."
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-# Chroot into the system
-print_message "Chrooting into the system..."
+print_message "Chrooting into system..."
 artix-chroot /mnt <<EOF
-
-# Setting the timezone
 ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
 hwclock --systohc
 
-# Setting locales
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+# Locale
+sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
+sed -i 's/^#en_US ISO-8859-1/en_US ISO-8859-1/' /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-# Setting the hostname
 echo "$hostname" > /etc/hostname
 echo -e "127.0.0.1\tlocalhost\n::1\tlocalhost\n127.0.1.1\t$hostname.localdomain\t$hostname" > /etc/hosts
 
-# Install and configure network manager
 pacman -S --noconfirm networkmanager networkmanager-runit
-ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
+ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/current
 
-# Install GRUB
 if [[ "$firmware" == "UEFI" ]]; then
   pacman -S --noconfirm grub efibootmgr
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
@@ -277,29 +221,14 @@ else
   pacman -S --noconfirm grub
   grub-install --target=i386-pc /dev/$disk_name
 fi
-
-# Generate GRUB config
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# Set root password
-echo "Please set the root password:"
-passwd
-
-# Create a user and set password
-echo "Creating user $username..."
 useradd -m -G wheel "$username"
-echo "Set password for $username:"
-passwd "$username"
-
-# Enable network manager service
-print_message "Enabling NetworkManager service..."
-ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/current
-
-# Exit chroot
-exit
+echo "root:$rootpass1" | chpasswd
+echo "$username:$userpass1" | chpasswd
 EOF
 
-# Final steps
-print_message "Installation complete. Please reboot and remove the installation media."
+# Cleanup sensitive variables
+unset rootpass1 rootpass2 userpass1 userpass2
 
-
+print_message "Installation complete. Please reboot and remove installation media."
