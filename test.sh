@@ -106,11 +106,15 @@ timezone="$continent_matched/$city_matched"
 
 print_message "Unmounting any mounted partitions on $disk..."
 for part in $(lsblk -lnpo NAME "$disk" | tail -n +2); do
-  umount "$part" 2>/dev/null || true
+  umount -l "$part" 2>/dev/null || true
 done
 
 print_message "Disabling any swap on $disk..."
 swapoff -a 2>/dev/null || true
+
+print_message "Inform kernel of partition changes..."
+partprobe "$disk"
+sleep 1
 
 print_message "Wiping and partitioning $disk..."
 wipefs -a "$disk"
