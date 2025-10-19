@@ -26,7 +26,7 @@ echo "Firmware: $firmware"
 echo # empty line for spacing
 
 # Disk selection and partitioning
-disk_name=$(select_storage)
+disk_name=$(select_disk)
 disk="/dev/$disk_name"
 validate_disk "$disk"
 confirm_disk_wipe "$disk"
