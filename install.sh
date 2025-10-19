@@ -13,9 +13,10 @@ source "$SCRIPT_DIR/lib/base.sh"
 source "$SCRIPT_DIR/lib/users.sh"
 source "$SCRIPT_DIR/lib/timezone.sh"
 
+# Display Installer Header
 echo "DarkArtix Installer v0.1"
 
-# Detect firmware
+# Detect firmware (BIOS/UEFI)
 if [ -d /sys/firmware/efi ]; then
   firmware="UEFI"
 else
@@ -24,10 +25,9 @@ fi
 
 echo "Firmware: $firmware"
 echo # empty line for spacing
-disk_name=$(ask "Choose a disk where to install" "$default_disk")
 
 # Disk selection and partitioning
-disk_name=$(select_storage)
+disk_name=$(select_storage)  # select_storage will already prompt user
 disk="/dev/$disk_name"
 validate_disk "$disk"
 confirm_disk_wipe "$disk"
@@ -53,3 +53,4 @@ configure_chroot
 cleanup
 
 echo "Installation complete. Please reboot and remove the installation media."
+
