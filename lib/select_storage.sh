@@ -5,7 +5,7 @@ select_storage() {
   # Show the task message with [+] formatting
   print_message "Choosing a disk."
 
-  # List available disks and their sizes
+  # List available disks and their sizes, using lsblk and filtering out unnecessary entries
   print_message "Available disks:"
   
   # Gather disk information using lsblk, then loop through and display it
@@ -24,19 +24,4 @@ select_storage() {
 
   # Return the selected disk name
   echo "$disk_name"
-}
-
-# Validate the selected disk
-validate_disk() {
-  local disk="$1"
-  if [[ ! -b "$disk" ]]; then
-    echo "Invalid disk: $disk"
-    exit 1
-  fi
-}
-
-# Confirm disk wipe before proceeding
-confirm_disk_wipe() {
-  local disk="$1"
-  confirm "This will erase all data on $disk. Continue?" "no"
 }
