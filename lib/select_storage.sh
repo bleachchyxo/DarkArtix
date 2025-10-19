@@ -9,9 +9,12 @@ select_storage() {
   print_message "Choosing a disk"
 
   # List available disks and their sizes using lsblk
+  print_message "Listing available disks:"
+  
+  # Use lsblk to list disks and capture the output
   mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /loop/ && $1 !~ /ram/ {print $1, $2}')
   
-  # If no disks are found, show an error and exit
+  # Check if any disks were found
   if [ ${#disks[@]} -eq 0 ]; then
     echo "No valid disks found. Exiting."
     exit 1
