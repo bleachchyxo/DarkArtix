@@ -2,27 +2,34 @@
 
 # List available disks and select one
 select_storage() {
-  # Use the print_message function to display the task
+  # Ensure print_message works by showing the task message
   print_message "Choosing a disk."
 
   # List available disks and their sizes
   mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /^(loop|ram)/ {print $1, $2}')
+  
+  if [ ${#disks[@]} -eq 0 ]; then
+    echo "No disks found."
+    exit 1
+  fi
+
+  # Display available disks with formatting
   echo "Available disks:"
   for disk_entry in "${disks[@]}"; do
     echo "  $disk_entry"
   done
 
-  # Set default disk (first one in the list)
+  # Default disk (first one in the list)
   default_disk="${disks[0]%% *}"
 
-  # Prompt user to choose a disk, default to the first one in the list
+  # Ask user to choose a disk, with the default being the first disk in the list
   disk_name=$(ask "Choose a disk where to install" "$default_disk")
 
   # Return the selected disk name
   echo "$disk_name"
 }
 
-# Validate selected disk
+# Validate the selected disk
 validate_disk() {
   local disk="$1"
   if [[ ! -b "$disk" ]]; then
