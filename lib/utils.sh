@@ -19,7 +19,9 @@ confirm() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-# Print message with [+] formatting
+# Print message with [+] formatting in green
 print_message() {
-  echo "[+] $1"
+  local message="$1"
+  # Print [+] in green and the rest in normal color
+  echo -e "\033[0;32m[+]\033[0m $message"
 }
