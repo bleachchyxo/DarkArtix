@@ -3,7 +3,7 @@
 # List available disks and select one
 select_storage() {
   print_message "Choosing a disk."
-  
+
   mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /^(loop|ram)/ {print $1, $2}')
   echo "Available disks:"
   for disk_entry in "${disks[@]}"; do
@@ -12,11 +12,10 @@ select_storage() {
 
   default_disk="${disks[0]%% *}"
 
-  disk_name=$(ask "Choose a disk to install" "$default_disk")
+  disk_name=$(ask "Choose a disk where to install" "$default_disk")
 
   echo "$disk_name"
 }
-
 
 # Validate selected disk
 validate_disk() {
