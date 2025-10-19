@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Ensure utils.sh is sourced for the ask function
-source "$(dirname "$0")/utils.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/utils.sh"
 
 # List available disks and select one
 select_storage() {
