@@ -23,6 +23,7 @@ else
 fi
 
 echo "Firmware: $firmware"
+print_message "Choosing a disk"
 lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /loop/ && $1 !~ /ram/ {print $1, $2}'
 
 # Select a disk
