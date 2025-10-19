@@ -1,4 +1,7 @@
 #!/bin/bash
+echo "Current working directory: $(pwd)"
+echo "Trying to source ./lib/utils.sh"
+source ./lib/utils.sh
 set -euo pipefail
 
 # Source all the modules
