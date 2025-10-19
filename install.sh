@@ -1,6 +1,6 @@
 #!/bin/bash
 # Enforce strict error handling
-set -euxo pipefail
+set -euo pipefail
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,5 +46,12 @@ set_timezone
 
 # User and password configuration
 set_root_password
-set_user_password "
+set_user_password "$username"
 
+# Chroot and final configuration
+configure_chroot
+
+# Cleanup
+cleanup
+
+echo "Installation complete. Please reboot and remove the installation media."
