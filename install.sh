@@ -1,16 +1,17 @@
 #!/bin/bash
-echo "Current working directory: $(pwd)"
-echo "Trying to source ./lib/utils.sh"
-source ./lib/utils.sh
-set -euo pipefail
 
-# Source all the modules
-source ./lib/utils.sh
-source ./lib/disk.sh
-source ./lib/partitioning.sh
-source ./lib/base.sh
-source ./lib/users.sh
-source ./lib/timezone.sh
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source the necessary scripts using the correct path
+source "$SCRIPT_DIR/lib/utils.sh"
+source "$SCRIPT_DIR/lib/disk.sh"
+source "$SCRIPT_DIR/lib/partitioning.sh"
+source "$SCRIPT_DIR/lib/base.sh"
+source "$SCRIPT_DIR/lib/users.sh"
+source "$SCRIPT_DIR/lib/timezone.sh"
+
+set -euo pipefail
 
 # Disk selection and partitioning
 disk_name=$(select_disk)
@@ -39,3 +40,4 @@ configure_chroot
 cleanup
 
 echo "Installation complete. Please reboot and remove the installation media."
+
