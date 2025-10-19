@@ -2,6 +2,9 @@
 
 # List available disks and select one
 select_storage() {
+  # Disable command tracing here
+  set +x
+
   # Print message before selecting disk
   print_message "Choosing a disk."
   
@@ -26,6 +29,9 @@ select_storage() {
 
   # Debug: Show the disk selected
   echo "Selected disk: $disk_name"
+
+  # Re-enable command tracing
+  set -x
 
   # Return the selected disk name
   echo "$disk_name"
