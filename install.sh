@@ -23,17 +23,19 @@ else
 fi
 
 echo "Firmware: $firmware"
-print_message "Choosing a disk"
-lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /loop/ && $1 !~ /ram/ {print $1, $2}'
 
-# Select a disk
+# Select a disk using the select_storage function
 disk_name=$(select_storage)
 disk="/dev/$disk_name"
 echo "You selected disk: $disk_name"
 
 # Validate selected disk
 validate_disk "$disk"
+
+# Confirm disk wipe before proceeding
 confirm_disk_wipe "$disk"
+
+# Partition the selected disk
 partition_disk "$disk"
 
 # Mount partitions and bind mount system directories
@@ -56,3 +58,4 @@ configure_chroot
 cleanup
 
 echo "Installation complete. Please reboot and remove the installation media."
+
