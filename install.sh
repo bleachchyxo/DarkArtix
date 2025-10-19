@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/lib/partitioning.sh"
 source "$SCRIPT_DIR/lib/base.sh"
 source "$SCRIPT_DIR/lib/users.sh"
 source "$SCRIPT_DIR/lib/timezone.sh"
+print_message "Testing print_message"
 
 echo "DarkArtix Installer v0.1"
 
