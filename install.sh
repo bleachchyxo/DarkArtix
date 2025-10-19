@@ -13,6 +13,19 @@ source "$SCRIPT_DIR/lib/base.sh"
 source "$SCRIPT_DIR/lib/users.sh"
 source "$SCRIPT_DIR/lib/timezone.sh"
 
+echo "DarkArtix Installer v0.1"
+
+# Detect firmware
+if [ -d /sys/firmware/efi ]; then
+  firmware="UEFI"
+else
+  firmware="BIOS"
+fi
+
+echo "Firmware: $firmware"
+echo # empty line for spacing
+disk_name=$(ask "Choose a disk where to install" "$default_disk")
+
 # Disk selection and partitioning
 disk_name=$(select_storage)
 disk="/dev/$disk_name"
