@@ -1,6 +1,6 @@
 #!/bin/bash
 # Enforce strict error handling
-set -euxo pipefail  # Add -x to see commands as they run
+set -euxo pipefail
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,9 +25,12 @@ fi
 echo "Firmware: $firmware"
 echo # empty line for spacing
 
-# Disk selection and partitioning
-disk_name=$(select_disk)
+# Select a disk
+disk_name=$(select_storage)
 disk="/dev/$disk_name"
+echo "You selected disk: $disk_name"
+
+# Validate selected disk
 validate_disk "$disk"
 confirm_disk_wipe "$disk"
 partition_disk "$disk"
@@ -43,13 +46,5 @@ set_timezone
 
 # User and password configuration
 set_root_password
-set_user_password "$username"
-
-# Chroot and final configuration
-configure_chroot
-
-# Cleanup
-cleanup
-
-echo "Installation complete. Please reboot and remove the installation media."
+set_user_password "
 
