@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Enforce strict error handling
+set -euo pipefail
+
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -10,8 +13,6 @@ source "$SCRIPT_DIR/lib/partitioning.sh"
 source "$SCRIPT_DIR/lib/base.sh"
 source "$SCRIPT_DIR/lib/users.sh"
 source "$SCRIPT_DIR/lib/timezone.sh"
-
-set -euo pipefail
 
 # Disk selection and partitioning
 disk_name=$(select_disk)
@@ -40,4 +41,3 @@ configure_chroot
 cleanup
 
 echo "Installation complete. Please reboot and remove the installation media."
-
