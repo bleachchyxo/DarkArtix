@@ -2,18 +2,18 @@
 
 # List available disks and select one
 select_storage() {
-  # Disable command tracing here
-  set +x
-
   # Print message before selecting disk
-  print_message "Choosing a disk."
-  
-  # List available disks and their sizes, using lsblk and filtering out unnecessary entries
-  print_message "Available disks:"
-  
-  # Gather disk information using lsblk, then loop through and display it
+  print_message "Choosing a disk"
+
+  # List available disks and their sizes using lsblk
   mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /loop/ && $1 !~ /ram/ {print $1, $2}')
   
+  # If no disks are found, show an error and exit
+  if [ ${#disks[@]} -eq 0 ]; then
+    echo "No valid disks found. Exiting."
+    exit 1
+  fi
+
   # Print the available disks
   for disk_entry in "${disks[@]}"; do
     echo "  $disk_entry"
@@ -22,16 +22,8 @@ select_storage() {
   # Set the default disk as the first in the list
   default_disk="${disks[0]%% *}"
 
-  echo "Default disk: $default_disk"  # Debug print for default disk
-
   # Ask user to choose a disk, default to the first disk
   disk_name=$(ask "Choose a disk where to install" "$default_disk")
-
-  # Debug: Show the disk selected
-  echo "Selected disk: $disk_name"
-
-  # Re-enable command tracing
-  set -x
 
   # Return the selected disk name
   echo "$disk_name"
@@ -44,10 +36,4 @@ validate_disk() {
     echo "Invalid disk: $disk"
     exit 1
   fi
-}
-
-# Confirm disk wipe before proceeding
-confirm_disk_wipe() {
-  local disk="$1"
-  confirm "This will erase all data on $disk. Continue?" "no"
 }
