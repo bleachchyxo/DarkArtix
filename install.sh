@@ -1,6 +1,6 @@
 #!/bin/bash
 # Enforce strict error handling
-set -euo pipefail
+set -euxo pipefail  # Add -x to see commands as they run
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
