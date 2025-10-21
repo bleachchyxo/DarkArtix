@@ -71,9 +71,13 @@ username=$(default_prompt "username" "user")
 # Timezone selection
 message blue "Timezone selection"
 echo "Available continents:"
-mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-for c in "${continents[@]}"; do echo "  $c"; done
+mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | \
+  grep -E '^(Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)$' | sort)
 
+# Print continents in a single row (no columns)
+echo "  ${continents[@]}"
+
+# Prompt for continent selection
 continent_input=$(default_prompt "Continent" "America")
 continent=$(echo "$continent_input" | awk '{print tolower($0)}')
 continent_matched=""
@@ -92,12 +96,13 @@ fi
 echo "Available cities in $continent_matched:"
 mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
 
-cols=4
+# Print cities in smaller columns (max 14 per column)
+cols=14
 for i in "${!cities[@]}"; do
-  if (( i % cols == 0 )); then
+  if (( i % cols == 0 )) && (( i != 0 )); then
     echo
   fi
-  printf "%-15s" "${cities[$i]}"
+  printf "%-20s" "${cities[$i]}"
 done
 echo
 
