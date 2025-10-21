@@ -69,11 +69,12 @@ hostname=$(default_prompt "hostname" "artix")
 username=$(default_prompt "username" "user")
 
 # Timezone selection
-print_message "Available continents:"
+message blue "Timezone selection"
+echo "Available continents:"
 mapfile -t continents < <(find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
 for c in "${continents[@]}"; do echo "  $c"; done
 
-continent_input=$(ask "Continent" "America")
+continent_input=$(default_prompt "Continent" "America")
 continent=$(echo "$continent_input" | awk '{print tolower($0)}')
 continent_matched=""
 for c in "${continents[@]}"; do
@@ -88,7 +89,7 @@ if [[ -z "$continent_matched" ]]; then
 fi
 
 # Pick cities based on continent
-print_message "Available cities in $continent_matched:"
+echo "Available cities in $continent_matched:"
 mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
 
 cols=4
@@ -100,7 +101,7 @@ for i in "${!cities[@]}"; do
 done
 echo
 
-city_input=$(ask "City" "${cities[0]}")
+city_input=$(default_prompt "City" "${cities[0]}")
 city=$(echo "$city_input" | awk '{print tolower($0)}')
 city_matched=""
 for c in "${cities[@]}"; do
