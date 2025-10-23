@@ -97,14 +97,23 @@ echo "Available cities in $continent_matched:"
 mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exec basename {} \; | sort)
 
 # Print cities in smaller columns (max 14 per column)
-cols=14
-rows=$(( (${#cities[@]} + cols - 1) / cols ))
+rows=14
+total=${#cities[@]}
+cols=$(( (total + rows - 1) / rows ))  # solo las que se necesiten
 
-for ((i = 0; i < rows; i++)); do
-  for ((j = 0; j < cols; j++)); do
-    index=$(( j * rows + i ))
-    # Stop if out of bounds
-    (( index >= ${#cities[@]} )) && break
+for ((r = 0; r < rows; r++)); do
+  for ((c = 0; c < cols; c++)); do
+    index=$(( c * rows + r ))
+    # si ya no hay más ciudades, solo rompe en la última columna
+    if (( index >= total )); then
+      # solo cortar la impresión si estamos en la última columna
+      if (( c == cols - 1 )); then
+        break
+      else
+        printf "%-20s" ""
+        continue
+      fi
+    fi
     printf "%-20s" "${cities[$index]}"
   done
   echo
