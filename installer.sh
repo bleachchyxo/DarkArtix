@@ -98,16 +98,14 @@ mapfile -t cities < <(find "/usr/share/zoneinfo/$continent_matched" -type f -exe
 
 # Print cities in smaller columns (max 14 per column)
 cols=14
-rows=$(( (${#cities[@]} + cols - 1) / cols ))  # Calculate the number of rows needed
+rows=$(( (${#cities[@]} + cols - 1) / cols ))
 
-for i in $(seq 0 $((rows - 1))); do
-  # Print each row
-  for j in $(seq 0 $((cols - 1))); do
-    # Calculate index of the city in the array
-    index=$((i + j * rows))
-    if [ $index -lt ${#cities[@]} ]; then
-      printf "%-20s" "${cities[$index]}"
-    fi
+for ((i = 0; i < rows; i++)); do
+  for ((j = 0; j < cols; j++)); do
+    index=$(( j * rows + i ))
+    # Stop if out of bounds
+    (( index >= ${#cities[@]} )) && break
+    printf "%-20s" "${cities[$index]}"
   done
   echo
 done
