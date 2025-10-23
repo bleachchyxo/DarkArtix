@@ -57,8 +57,8 @@ default_disk="${disks[0]%% *}"
 disk_name=$(default_prompt "Choose a disk to install" "$default_disk")
 disk="/dev/$disk_name"
 
-if [[ ! -b "$disk" ]]; then
-  echo "Invalid disk: $disk"
+if [[ -z "${disk_name:-}" || ! -b "$disk" ]]; then
+  echo "Invalid or missing disk selection."
   exit 1
 fi
 confirmation "This will erase all data on $disk. Continue?" "no"
