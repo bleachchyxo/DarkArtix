@@ -106,88 +106,44 @@ if [[ -z "$selected_continent" ]]; then
   exit 1
 fi
 
-# Now list countries inside the selected continent (these are directories)
-echo "Available countries in $selected_continent:"
-mapfile -t countries_list < <(find "/usr/share/zoneinfo/$selected_continent" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+# List cities inside the selected continent folder
+echo "Available cities in $selected_continent:"
+mapfile -t city_list < <(find "/usr/share/zoneinfo/$selected_continent" -type f -exec basename {} \; | sort)
 
-if [[ ${#countries_list[@]} -eq 0 ]]; then
-  echo "No countries found in continent $selected_continent."
-  exit 1
-fi
-
-# Display countries in columns with 14 rows per column
-rows_per_column=14
-total_countries=${#countries_list[@]}
-columns_needed=$(( (total_countries + rows_per_column - 1) / rows_per_column ))
-
-for (( row=0; row < rows_per_column; row++ )); do
-  for (( col=0; col < columns_needed; col++ )); do
-    idx=$(( col * rows_per_column + row ))
-    if (( idx >= total_countries )); then
-      if (( col == columns_needed -1 )); then
-        break
-      else
-        printf "%-20s" ""
-        continue
-      fi
-    fi
-    printf "%-20s" "${countries_list[$idx]}"
-  done
-  echo
-done
-
-# Prompt for country selection
-country_input=$(default_prompt "Country" "${countries_list[0]}")
-country_lower=$(echo "$country_input" | awk '{print tolower($0)}')
-
-selected_country=""
-for country in "${countries_list[@]}"; do
-  if [[ "${country,,}" == "$country_lower" ]]; then
-    selected_country="$country"
-    break
-  fi
-done
-
-if [[ -z "$selected_country" ]]; then
-  echo "Invalid country '$country_input'. Please try again."
-  exit 1
-fi
-
-# List cities inside the selected country (files in directory)
-echo "Available cities in $selected_country:"
-mapfile -t cities_list < <(find "/usr/share/zoneinfo/$selected_continent/$selected_country" -type f -exec basename {} \; | sort)
-
-if [[ ${#cities_list[@]} -eq 0 ]]; then
-  echo "No cities found in country $selected_country."
+if [[ ${#city_list[@]} -eq 0 ]]; then
+  echo "No cities found for continent $selected_continent."
   exit 1
 fi
 
 # Display cities in columns with 14 rows per column
-total_cities=${#cities_list[@]}
+rows_per_column=14
+total_cities=${#city_list[@]}
 columns_needed=$(( (total_cities + rows_per_column - 1) / rows_per_column ))
 
 for (( row=0; row < rows_per_column; row++ )); do
   for (( col=0; col < columns_needed; col++ )); do
-    idx=$(( col * rows_per_column + row ))
-    if (( idx >= total_cities )); then
-      if (( col == columns_needed -1 )); then
+    city_index=$(( col * rows_per_column + row ))
+    if (( city_index >= total_cities )); then
+      # Only break printing on last column if no more cities
+      if (( col == columns_needed - 1 )); then
         break
       else
+        # Fill empty space for alignment in other columns
         printf "%-20s" ""
         continue
       fi
     fi
-    printf "%-20s" "${cities_list[$idx]}"
+    printf "%-20s" "${city_list[$city_index]}"
   done
   echo
 done
 
 # Prompt for city selection
-city_input=$(default_prompt "City" "${cities_list[0]}")
+city_input=$(default_prompt "City" "${city_list[0]}")
 city_lower=$(echo "$city_input" | awk '{print tolower($0)}')
 
 selected_city=""
-for city in "${cities_list[@]}"; do
+for city in "${city_list[@]}"; do
   if [[ "${city,,}" == "$city_lower" ]]; then
     selected_city="$city"
     break
@@ -199,5 +155,7 @@ if [[ -z "$selected_city" ]]; then
   exit 1
 fi
 
-timezone="$selected_continent/$selected_country/$selected_city"
+# Final timezone variable (continent/city)
+timezone="$selected_continent/$selected_city"
 echo "Selected timezone: $timezone"
+
