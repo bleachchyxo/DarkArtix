@@ -33,71 +33,45 @@ confirmation() {
 
 message blue "Setting the timezone"
 
-# Loop until valid continent and city are selected
+timezone_root_directory="/usr/share/zoneinfo"
+
 while true; do
-  echo "Available continents:"
+  echo "Available regions:"
   echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
 
-  continent=$(default_prompt "Continent" "America")
+  selected_region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt "Region" "America")")"
+  selected_region="${selected_region^}"
 
-  # Normalize first letter capitalization for continent
-  continent="$(tr '[:upper:]' '[:lower:]' <<< "$continent")"
-  continent="$(tr '[:lower:]' '[:upper:]' <<< "${continent:0:1}")${continent:1}"
+  [[ -d "$timezone_root_directory/$selected_region" || -d "$timezone_root_directory/${selected_region^^}" ]] || { 
+    echo "Invalid option."; 
+    continue; 
+  }
 
-  if [[ ! -d "/usr/share/zoneinfo/$continent" && ! -d "/usr/share/zoneinfo/${continent^^}" ]]; then
-      echo "Invalid option."
-      continue
-  fi
+  selected_region=$( [[ -d "$timezone_root_directory/$selected_region" ]] && echo "$selected_region" || echo "${selected_region^^}" )
+  current_timezone_path="$timezone_root_directory/$selected_region"
+  selected_timezone_path="$selected_region"
 
-  # Then normalize to the actual directory name
-  if [[ -d "/usr/share/zoneinfo/$continent" ]]; then
-      continent="$continent"
-  else
-      continent="${continent^^}"
-  fi
-
-  timezone_base="/usr/share/zoneinfo/$continent"
-  display_continent="$continent"
-
-  # Loop for city selection (supports nested directories)
   while true; do
-    echo "Available cities in $display_continent:"
-    ls "$timezone_base"
+    echo "Available timezones in $selected_timezone_path:"
+    ls "$current_timezone_path"
+    available_timezones=($(ls "$current_timezone_path"))
+    user_timezone_input=$(default_prompt "City/Timezone" "${available_timezones[RANDOM % ${#available_timezones[@]}]}")
 
-    # List all entries (files and directories)
-    entries=($(ls "$timezone_base"))
-    default_entry="${entries[RANDOM % ${#entries[@]}]}"
-
-    entry=$(default_prompt "City/Timezone" "$default_entry")
-
-    # Case-insensitive match against entries
-    match=""
-    for e in "${entries[@]}"; do
-      if [[ "${e,,}" == "${entry,,}" ]]; then
-        match="$e"
-        break
-      fi
+    matched_timezone_entry=""
+    for timezone_option in "${available_timezones[@]}"; do
+      [[ "${timezone_option,,}" == "${user_timezone_input,,}" ]] && matched_timezone_entry="$timezone_option" && break
     done
 
-    if [[ -z "$match" ]]; then
-      echo "Invalid option."
-      continue
-    fi
+    [[ -z "$matched_timezone_entry" ]] && { echo "Invalid option."; continue; }
 
-    next_path="$timezone_base/$match"
+    current_timezone_path="$current_timezone_path/$matched_timezone_entry"
+    selected_timezone_path="$selected_timezone_path/$matched_timezone_entry"
 
-    if [[ -d "$next_path" ]]; then
-      # Drill down if it's a directory
-      timezone_base="$next_path"
-      display_continent="$display_continent/$match"
-      continue
-    elif [[ -f "$next_path" ]]; then
-      timezone="$display_continent/$match"
-      message blue "Selected timezone: $timezone"
-      break 2  # Exit both loops
-    else
-      echo "Invalid option."
-      continue
-    fi
+    [[ -f "$current_timezone_path" ]] && { 
+      final_selected_timezone="$selected_timezone_path"
+      message blue "Selected timezone: $final_selected_timezone"
+      ln -sf "$current_timezone_path" /etc/localtime
+      break 2
+    }
   done
 done
