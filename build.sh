@@ -47,16 +47,17 @@ echo "Firmware: $firmware"
 # List available disks for installation
 message blue "Choosing a disk"
 echo "Available disks:"
-mapfile -t available_disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3 == "disk" && $1 !~ /loop/ && $1 !~ /ram/ {print $1, $2}')
+echo "Available disks:"
+mapfile -t available_disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3=="disk" && $1!~/loop|ram/ {print $1, $2}')
 
-if [[ ${#available_disks[@]} -eq 0 ]]; then
-  echo "No disks detected."
-  exit 1
-fi
+((${#available_disks[@]})) || { echo "No disks detected."; exit 1; }
 
-# Show disks with sizes
 for disk_entry in "${available_disks[@]}"; do
-  echo "  $disk_entry"
+  disk_name="${disk_entry%% *}"
+  disk_path="/dev/$disk_name"
+  partition_type=$(lsblk -dn -o PTTYPE "$disk_path")
+  disk_model=$(fdisk -l "$disk_path" 2>/dev/null | awk -F: '/Disk model/ {gsub(/^ +/,"",$2); print $2}')
+  echo "  $disk_name ${disk_entry#* } (${disk_model:-$partition_type})"
 done
 
 default_disk="${available_disks[0]%% *}"
