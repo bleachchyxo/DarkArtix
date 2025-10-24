@@ -129,6 +129,7 @@ mkfs.ext4 -F "${disk_path}3"
 base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
 [[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
 
+basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 
