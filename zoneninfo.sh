@@ -56,7 +56,6 @@ while true; do
 
   # Loop for city selection (supports nested directories)
   while true; do
-    echo
     echo "Available cities in $display_continent:"
     ls "$timezone_base"
 
