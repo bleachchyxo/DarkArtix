@@ -32,22 +32,33 @@ confirmation() {
 }
 
 message blue "Setting the timezone"
-echo "Available continents:"
-echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
 
-continent=$(default_prompt "Continent" "America")
-continent="$(tr '[:upper:]' '[:lower:]' <<< "$continent")"
-continent="$(tr '[:lower:]' '[:upper:]' <<< "${continent:0:1}")${continent:1}"
+list_options() { ls "$1"; }
 
-echo
-echo "Available cities in $continent:"
-ls /usr/share/zoneinfo/"$continent"
+normalize() { echo "${1^}"; }
 
-cities=($(ls /usr/share/zoneinfo/"$continent"))
-default_city="${cities[RANDOM % ${#cities[@]}]}"
+pick_entry() {
+  entries=($(list_options "$1"))
+  entry=$(default_prompt "$2" "${entries[RANDOM % ${#entries[@]}]}")
+  for e in "${entries[@]}"; do [[ "${e,,}" == "${entry,,}" ]] && echo "$e" && return; done
+}
 
-city=$(default_prompt "City/Timezone" "$default_city")
+timezone_base="/usr/share/zoneinfo"
+while true; do
+  echo "Available continents:"
+  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
+  continent=$(normalize "$(default_prompt "Continent" "America")")
+  [[ -d "$timezone_base/$continent" || -d "$timezone_base/${continent^^}" ]] || { echo "Invalid option."; continue; }
+  continent=$( [[ -d "$timezone_base/$continent" ]] && echo "$continent" || echo "${continent^^}" )
+  display="$continent"
+  path="$timezone_base/$continent"
 
-timezone="$continent/$city"
-message blue "Selected timezone: $timezone"
-
+  while true; do
+    echo "Available cities in $display:"
+    match=$(pick_entry "$path" "City/Timezone")
+    [[ -z "$match" ]] && { echo "Invalid option."; continue; }
+    path="$path/$match"
+    display="$display/$match"
+    [[ -f "$path" ]] && { timezone="$display"; message blue "Selected timezone: $timezone"; break 2; }
+  done
+done
