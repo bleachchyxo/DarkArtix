@@ -104,7 +104,7 @@ EOF
 
 sleep 2
 
-if [ "$firmware_type" = "UEFI" ]; then
+if [ "$firmware" = "UEFI" ]; then
   mkfs.fat -F32 "${disk}1"
 else
   mkfs.ext4 -F "${disk}1"
