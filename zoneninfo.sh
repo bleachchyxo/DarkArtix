@@ -44,11 +44,16 @@ while true; do
   continent="$(tr '[:upper:]' '[:lower:]' <<< "$continent")"
   continent="$(tr '[:lower:]' '[:upper:]' <<< "${continent:0:1}")${continent:1}"
 
-  # Check if continent exists
-  if [[ ! -d "/usr/share/zoneinfo/$continent" ]]; then
-    echo "Invalid option."
-    echo
-    continue
+  if [[ ! -d "/usr/share/zoneinfo/$continent" && ! -d "/usr/share/zoneinfo/${continent^^}" ]]; then
+      echo "Invalid option."
+      continue
+  fi
+
+  # Then normalize to the actual directory name
+  if [[ -d "/usr/share/zoneinfo/$continent" ]]; then
+      continent="$continent"
+  else
+      continent="${continent^^}"
   fi
 
   timezone_base="/usr/share/zoneinfo/$continent"
