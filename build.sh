@@ -61,17 +61,17 @@ done
 
 default_disk="${available_disks[0]%% *}"
 disk_choice=$(default_prompt "Choose a disk to install" "$default_disk")
-disk="/dev/$disk_choice"
+disk_path="/dev/$disk_choice"
 
 # Validate disk choice
-if [[ -z "${disk_choice:-}" || ! -b "$disk" ]]; then
+if [[ -z "${disk_choice:-}" || ! -b "$disk_path" ]]; then
   echo "Invalid or missing disk selection."
   exit 1
 fi
 
-confirmation "This will erase all data on $disk. Continue?" "no"
+confirmation "This will erase all data on $disk_path. Continue?" "no"
 
-disk_name=$(basename "$disk")
+disk_name=$(basename "$disk_path")
 total_gb=$(( $(< /sys/block/$disk_name/size) * $(< /sys/block/$disk_name/queue/hw_sector_size) / 1024 / 1024 / 1024 ))
 
 case $total_gb in
@@ -87,7 +87,7 @@ for partition in $(lsblk -ln -o NAME "$disk_path" | tail -n +2); do
     [ -n "$mount_point" ] && umount "/dev/$partition"
 done
 
-fdisk "$disk" <<EOF
+fdisk "$disk_path" <<EOF
 o
 n
 p
@@ -110,11 +110,11 @@ EOF
 sleep 2
 
 if [ "$firmware" = "UEFI" ]; then
-  mkfs.fat -F32 "${disk}1"
+  mkfs.fat -F32 "${disk_path}1"
 else
-  mkfs.ext4 -F "${disk}1"
+  mkfs.ext4 -F "${disk_path}1"
 fi
-mkfs.ext4 -F "${disk}2"
-mkfs.ext4 -F "${disk}3"
+mkfs.ext4 -F "${disk_path}2"
+mkfs.ext4 -F "${disk_path}3"
 
-fdisk -l "$disk" | grep "$disk"
+fdisk -l "$disk_path" | grep "$disk_path"
