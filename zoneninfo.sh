@@ -66,12 +66,6 @@ while true; do
 
     current_timezone_path="$current_timezone_path/$matched_timezone_entry"
     selected_timezone_path="$selected_timezone_path/$matched_timezone_entry"
-
-    [[ -f "$current_timezone_path" ]] && { 
-      final_selected_timezone="$selected_timezone_path"
-      message blue "Selected timezone: $final_selected_timezone"
-      ln -sf "$current_timezone_path" /etc/localtime
-      break 2
-    }
+    
   done
 done
