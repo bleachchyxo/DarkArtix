@@ -33,28 +33,29 @@ confirmation() {
 
 message blue "Setting the timezone"
 
-normalize() { echo "${1^}"; }
-
-pick_entry() {
-  local path="$1" prompt="$2"
-  entries=($(ls "$path"))
-  echo "Available options in $path:"
-  echo "${entries[*]}"
-  entry=$(default_prompt "$prompt" "${entries[RANDOM % ${#entries[@]}]}")
-  for e in "${entries[@]}"; do [[ "${e,,}" == "${entry,,}" ]] && echo "$e" && return; done
-}
-
 base="/usr/share/zoneinfo"
+
 while true; do
-  continent=$(normalize "$(default_prompt "Continent" "America")")
+  echo "Available continents:"
+  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
+  continent="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt "Continent" "America")")"
+  continent="${continent^}"
   [[ -d "$base/$continent" || -d "$base/${continent^^}" ]] || { echo "Invalid option."; continue; }
   continent=$( [[ -d "$base/$continent" ]] && echo "$continent" || echo "${continent^^}" )
+
   path="$base/$continent"
   display="$continent"
 
   while true; do
-    match=$(pick_entry "$path" "City/Timezone")
+    echo "Available cities in $display:"
+    ls "$path"
+    entries=($(ls "$path"))
+    entry=$(default_prompt "City/Timezone" "${entries[RANDOM % ${#entries[@]}]}")
+
+    match=""
+    for e in "${entries[@]}"; do [[ "${e,,}" == "${entry,,}" ]] && match="$e" && break; done
     [[ -z "$match" ]] && { echo "Invalid option."; continue; }
+
     path="$path/$match"
     display="$display/$match"
     [[ -f "$path" ]] && { timezone="$display"; message blue "Selected timezone: $timezone"; break 2; }
