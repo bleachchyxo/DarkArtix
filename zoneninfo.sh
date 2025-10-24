@@ -59,3 +59,4 @@ while :; do
   echo "$timezone" | sudo tee /etc/timezone >/dev/null
   message green "Timezone set to $timezone"
   break
+done
