@@ -48,15 +48,22 @@ echo "Firmware: $firmware"
 message blue "Choosing a disk"
 echo "Available disks:"
 mapfile -t available_disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3=="disk" && $1!~/loop|ram/ {print $1, $2}')
-
 ((${#available_disks[@]})) || { echo "No disks detected."; exit 1; }
+
+# Find longest size length for alignment
+max_size_length=0
+for disk_entry in "${available_disks[@]}"; do
+  size_part="${disk_entry#* }"
+  (( ${#size_part} > max_size_length )) && max_size_length=${#size_part}
+done
 
 for disk_entry in "${available_disks[@]}"; do
   disk_name="${disk_entry%% *}"
+  disk_size="${disk_entry#* }"
   disk_path="/dev/$disk_name"
   partition_type=$(lsblk -dn -o PTTYPE "$disk_path")
   disk_model=$(fdisk -l "$disk_path" 2>/dev/null | awk -F: '/Disk model/ {gsub(/^ +/,"",$2); print $2}')
-  echo "  $disk_name ${disk_entry#* } (${disk_model:-$partition_type})"
+  printf "  %-4s %-${max_size_length}s (%s)\n" "$disk_name" "$disk_size" "${disk_model:-$partition_type}"
 done
 
 default_disk="${available_disks[0]%% *}"
