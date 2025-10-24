@@ -31,41 +31,31 @@ confirmation() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-message blue "Setting the timezone"
+message blue "Timezone configuration"
+zone_root="/usr/share/zoneinfo"
 
-timezone_root_directory="/usr/share/zoneinfo"
+regions=(Africa America Antarctica Asia Atlantic Australia Europe Mexico Pacific US)
+echo "Regions: ${regions[*]}"
 
-while true; do
-  echo "Available regions:"
-  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
+while :; do
+  region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt 'Region' 'America')")"
+  region="${region^}"
+  [[ -d "$zone_root/$region" || -d "$zone_root/${region^^}" ]] || { echo "Invalid region."; continue; }
 
-  selected_region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt "Region" "America")")"
-  selected_region="${selected_region^}"
+  region_path="$zone_root/${region^^}"
+  [[ -d "$zone_root/$region" ]] && region_path="$zone_root/$region"
+  cities=($(ls "$region_path"))
 
-  [[ -d "$timezone_root_directory/$selected_region" || -d "$timezone_root_directory/${selected_region^^}" ]] || { 
-    echo "Invalid option."; 
-    continue; 
-  }
+  echo "Cities in $region:"
+  printf '%s\n' "${cities[@]}"
+  city="$(default_prompt 'City/Timezone' "${cities[RANDOM % ${#cities[@]}]}")"
+  [[ ! " ${cities[*]} " =~ " ${city} " ]] && { echo "Invalid city."; continue; }
 
-  selected_region=$( [[ -d "$timezone_root_directory/$selected_region" ]] && echo "$selected_region" || echo "${selected_region^^}" )
-  current_timezone_path="$timezone_root_directory/$selected_region"
-  selected_timezone_path="$selected_region"
+  timezone="$region/$city"
+  message yellow "Selected timezone: $timezone"
+  confirmation "Apply this timezone?" "yes" || { message yellow "Canceled. Try again."; continue; }
 
-  while true; do
-    echo "Available timezones in $selected_timezone_path:"
-    ls "$current_timezone_path"
-    available_timezones=($(ls "$current_timezone_path"))
-    user_timezone_input=$(default_prompt "City/Timezone" "${available_timezones[RANDOM % ${#available_timezones[@]}]}")
-
-    matched_timezone_entry=""
-    for timezone_option in "${available_timezones[@]}"; do
-      [[ "${timezone_option,,}" == "${user_timezone_input,,}" ]] && matched_timezone_entry="$timezone_option" && break
-    done
-
-    [[ -z "$matched_timezone_entry" ]] && { echo "Invalid option."; continue; }
-
-    current_timezone_path="$current_timezone_path/$matched_timezone_entry"
-    selected_timezone_path="$selected_timezone_path/$matched_timezone_entry"
-    
-  done
-done
+  sudo ln -sf "$zone_root/$timezone" /etc/localtime
+  echo "$timezone" | sudo tee /etc/timezone >/dev/null
+  message green "Timezone set to $timezone"
+  break
