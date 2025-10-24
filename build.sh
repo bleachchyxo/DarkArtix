@@ -47,7 +47,6 @@ echo "Firmware: $firmware"
 # List available disks for installation
 message blue "Choosing a disk"
 echo "Available disks:"
-echo "Available disks:"
 mapfile -t available_disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3=="disk" && $1!~/loop|ram/ {print $1, $2}')
 
 ((${#available_disks[@]})) || { echo "No disks detected."; exit 1; }
