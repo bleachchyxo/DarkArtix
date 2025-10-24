@@ -78,6 +78,7 @@ fi
 
 confirmation "This will erase all data on $disk_path. Continue?" "no"
 
+message blue "Formatting and creating the partitions"
 disk_name=$(basename "$disk_path")
 total_gb=$(( $(< /sys/block/$disk_name/size) * $(< /sys/block/$disk_name/queue/hw_sector_size) / 1024 / 1024 / 1024 ))
 
@@ -124,4 +125,8 @@ fi
 mkfs.ext4 -F "${disk_path}2"
 mkfs.ext4 -F "${disk_path}3"
 
-fdisk -l "$disk_path" | grep "$disk_path"
+#Installing the base system
+basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
+
+fstabgen -U /mnt >> /mnt/etc/fstab
+
