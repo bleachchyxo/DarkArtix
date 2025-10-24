@@ -82,6 +82,11 @@ case $total_gb in
   1[0-9][0-9]|*) boot_size=1 root_size=30 ;;
 esac
 
+for partition in $(lsblk -ln -o NAME "$disk_path" | tail -n +2); do
+    mount_point=$(lsblk -ln -o MOUNTPOINT "/dev/$partition")
+    [ -n "$mount_point" ] && umount "/dev/$partition"
+done
+
 fdisk "$disk" <<EOF
 o
 n
