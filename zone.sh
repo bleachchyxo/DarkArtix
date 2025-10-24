@@ -51,7 +51,3 @@ city=$(default_prompt "City/Timezone" "$default_city")
 timezone="$continent/$city"
 message blue "Selected timezone: $timezone"
 
-confirmation "Apply timezone setting?" "yes"
-
-ln -sf /usr/share/zoneinfo/"$timezone" /etc/localtime
-message green "Timezone set to $timezone"
