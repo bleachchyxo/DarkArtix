@@ -33,7 +33,6 @@ confirmation() {
 
 message blue "Setting the timezone"
 
-# Loop until valid continent and city are selected
 while true; do
   echo "Available continents:"
   echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
@@ -42,31 +41,38 @@ while true; do
   continent="$(tr '[:upper:]' '[:lower:]' <<< "$continent")"
   continent="$(tr '[:lower:]' '[:upper:]' <<< "${continent:0:1}")${continent:1}"
 
-  # Check if the continent directory exists
+  # Check if continent exists
   if [[ ! -d "/usr/share/zoneinfo/$continent" ]]; then
     echo "Invalid option."
     echo
-    continue  # Go back to the beginning of the loop
+    continue
   fi
 
-  echo
-  echo "Available cities in $continent:"
-  ls /usr/share/zoneinfo/"$continent"
+  timezone_base="/usr/share/zoneinfo/$continent"
 
-  cities=($(ls /usr/share/zoneinfo/"$continent"))
-  default_city="${cities[RANDOM % ${#cities[@]}]}"
-
-  city=$(default_prompt "City/Timezone" "$default_city")
-
-  timezone="$continent/$city"
-
-  # Check if timezone file exists
-  if [[ ! -f "/usr/share/zoneinfo/$timezone" ]]; then
-    echo "Invalid option."
+  while true; do
     echo
-    continue  # Back to start if invalid city
-  fi
+    echo "Available cities in $continent:"
+    ls "$timezone_base"
 
-  message blue "Selected timezone: $timezone"
-  break  # Exit loop once valid input is confirmed
+    cities=($(ls "$timezone_base"))
+    default_city="${cities[RANDOM % ${#cities[@]}]}"
+
+    city=$(default_prompt "City/Timezone" "$default_city")
+    timezone="$timezone_base/$city"
+
+    if [[ -d "$timezone" ]]; then
+      # If user picked a subdirectory, drill down
+      timezone_base="$timezone"
+      continent="${continent}/$city"
+      continue
+    elif [[ ! -f "$timezone" ]]; then
+      echo "Invalid option."
+      echo
+      continue
+    fi
+
+    message blue "Selected timezone: ${timezone#/usr/share/zoneinfo/}"
+    break 2  # break out of both loops
+  done
 done
