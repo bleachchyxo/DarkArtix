@@ -55,24 +55,21 @@ while true; do
     echo "Available cities in $continent:"
     ls "$timezone_base"
 
-    cities=($(ls "$timezone_base"))
-    default_city="${cities[RANDOM % ${#cities[@]}]}"
+    cities=($(ls /usr/share/zoneinfo/"$continent"))
 
-    city=$(default_prompt "City/Timezone" "$default_city")
-    timezone="$timezone_base/$city"
-
-    if [[ -d "$timezone" ]]; then
-      # If user picked a subdirectory, drill down
-      timezone_base="$timezone"
-      continent="${continent}/$city"
-      continue
-    elif [[ ! -f "$timezone" ]]; then
-      echo "Invalid option."
-      echo
-      continue
-    fi
-
-    message blue "Selected timezone: ${timezone#/usr/share/zoneinfo/}"
-    break 2  # break out of both loops
-  done
+# Find a matching city ignoring case
+city_match=""
+for c in "${cities[@]}"; do
+  if [[ "${c,,}" == "${city,,}" ]]; then
+    city_match="$c"
+    break
+  fi
 done
+
+if [[ -z "$city_match" ]]; then
+  echo "Invalid option."
+  continue
+fi
+
+city="$city_match"
+timezone="$continent/$city"
