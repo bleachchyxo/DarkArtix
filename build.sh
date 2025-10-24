@@ -126,7 +126,10 @@ mkfs.ext4 -F "${disk_path}2"
 mkfs.ext4 -F "${disk_path}3"
 
 #Installing the base system
-basestrap /mnt base base-devel runit elogind-runit linux linux-firmware neovim
+base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
+[[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
 
 fstabgen -U /mnt >> /mnt/etc/fstab
+
+
 
