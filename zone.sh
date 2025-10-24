@@ -31,15 +31,16 @@ confirmation() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-message blue "Choose a continent;"
-echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Pacific"
+message blue "Setting the timezone"
+echo "Available continents:"
+echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
 
 continent=$(default_prompt "Continent" "America")
 continent="$(tr '[:upper:]' '[:lower:]' <<< "$continent")"
 continent="$(tr '[:lower:]' '[:upper:]' <<< "${continent:0:1}")${continent:1}"
 
 echo
-message blue "Choose a timezone in $continent;"
+echo "Available cities in $continent:"
 ls /usr/share/zoneinfo/"$continent"
 
 cities=($(ls /usr/share/zoneinfo/"$continent"))
