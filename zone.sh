@@ -42,7 +42,10 @@ echo
 message blue "Choose a timezone in $continent;"
 ls /usr/share/zoneinfo/"$continent"
 
-city=$(default_prompt "City/Timezone" "New_York")
+cities=($(ls /usr/share/zoneinfo/"$continent"))
+default_city="${cities[RANDOM % ${#cities[@]}]}"
+
+city=$(default_prompt "City/Timezone" "$default_city")
 
 timezone="$continent/$city"
 message blue "Selected timezone: $timezone"
