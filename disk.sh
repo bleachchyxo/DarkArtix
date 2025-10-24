@@ -10,8 +10,8 @@ total_gb=$(( $(< /sys/block/$disk_name/size) * $(< /sys/block/$disk_name/queue/h
 
 case $total_gb in
   [0-9]) boot_size=0.5 root_size=4 ;;
-  1[0-9]) boot_size=0.5 root_size=8 ;;
-  2[0-9]|3[0-9]) boot_size=1 root_size=10 ;;
+  1[0-9]) boot_size=0.5 root_size=6 ;;
+  2[0-9]|3[0-9]) boot_size=1 root_size=8 ;;
   [4-9][0-9]) boot_size=1 root_size=20 ;;
   1[0-9][0-9]|*) boot_size=1 root_size=30 ;;
 esac
@@ -40,7 +40,6 @@ p
 w
 EOF
 
-# Wait a moment for the kernel to update partition table
 sleep 2
 
 echo "→ Formatting partitions..."
