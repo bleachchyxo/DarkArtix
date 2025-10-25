@@ -31,7 +31,7 @@ confirmation() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-message blue "Setting the timezone"
+message blue "Setting the region"
 
 zone_root="/usr/share/zoneinfo"
 
@@ -52,12 +52,12 @@ while true; do
     cities=($(ls "$region_path"))
     city=$(default_prompt "City/Timezone" "${cities[RANDOM % ${#cities[@]}]}")
 
-    match=""
-    for e in "${cities[@]}"; do [[ "${e,,}" == "${city,,}" ]] && match="$e" && break; done
-    [[ -z "$match" ]] && { echo "Invalid option."; continue; }
+    chosen_city=""
+    for e in "${cities[@]}"; do [[ "${e,,}" == "${city,,}" ]] && chosen_city="$e" && break; done
+    [[ -z "$chosen_city" ]] && { echo "Invalid option."; continue; }
 
-    region_path="$region_path/$match"
-    timezone="$timezone/$match"
-    [[ -f "$region_path" ]] && { message blue "Selected timezone: $timezone"; break 2; }
+    region_path="$region_path/$chosen_city"
+    timezone="$timezone/$chosen_city"
+    [[ -f "$region_path" ]] && break 2
   done
 done
