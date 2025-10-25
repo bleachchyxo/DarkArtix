@@ -176,7 +176,13 @@ fi
 mkfs.ext4 -F "${disk_path}2"
 mkfs.ext4 -F "${disk_path}3"
 
-#Installing the base system
+# Mounting partition directories
+mount "${disk_path}2" /mnt
+mkdir -p /mnt/boot /mnt/home
+mount "${disk_path}1" /mnt/boot
+mount "${disk_path}3" /mnt/home
+
+# Installing the base system
 base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
 [[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
 
