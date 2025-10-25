@@ -76,9 +76,8 @@ fi
 
 confirmation "This will erase all data on $disk_path. Continue?" "no"
 
-#Setting the timezone
+# setting region
 message blue "Setting the region"
-
 zone_root="/usr/share/zoneinfo"
 
 while true; do
@@ -128,37 +127,6 @@ while true; do
   read -s -p "User password: " userpass1; echo
   read -s -p "Confirm user password: " userpass2; echo
   [[ "$userpass1" == "$userpass2" && -n "$userpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
-done
-
-# setting region
-message blue "Setting the region"
-zone_root="/usr/share/zoneinfo"
-
-while true; do
-  echo "Available continents:"
-  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
-  region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt "Continent" "America")")"
-  region="${region^}"
-  [[ -d "$zone_root/$region" || -d "$zone_root/${region^^}" ]] || { echo "Invalid option."; continue; }
-  region=$( [[ -d "$zone_root/$region" ]] && echo "$region" || echo "${region^^}" )
-
-  region_path="$zone_root/$region"
-  timezone="$region"
-
-  while true; do
-    echo "Available cities in $timezone:"
-    ls "$region_path"
-    cities=($(ls "$region_path"))
-    city=$(default_prompt "City/Timezone" "${cities[RANDOM % ${#cities[@]}]}")
-
-    chosen_city=""
-    for e in "${cities[@]}"; do [[ "${e,,}" == "${city,,}" ]] && chosen_city="$e" && break; done
-    [[ -z "$chosen_city" ]] && { echo "Invalid option."; continue; }
-
-    region_path="$region_path/$chosen_city"
-    timezone="$timezone/$chosen_city"
-    [[ -f "$region_path" ]] && break 2
-  done
 done
 
 # formatting disk and creating partitions
