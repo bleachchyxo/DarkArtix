@@ -31,32 +31,36 @@ confirmation() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-message blue "Timezone configuration"
+message blue "Setting the timezone"
+
 zone_root="/usr/share/zoneinfo"
 
-regions=(Africa America Antarctica Asia Atlantic Australia Europe Mexico Pacific US)
-echo "Regions: ${regions[*]}"
-
-while :; do
-  region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt 'Region' 'America')")"
+while true; do
+  echo "Available continents:"
+  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
+  
+  region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt "Continent" "America")")"
   region="${region^}"
-  [[ -d "$zone_root/$region" || -d "$zone_root/${region^^}" ]] || { echo "Invalid region."; continue; }
+  
+  [[ -d "$zone_root/$region" || -d "$zone_root/${region^^}" ]] || { echo "Invalid option."; continue; }
+  region=$( [[ -d "$zone_root/$region" ]] && echo "$region" || echo "${region^^}" )
 
-  region_path="$zone_root/${region^^}"
-  [[ -d "$zone_root/$region" ]] && region_path="$zone_root/$region"
-  cities=($(ls "$region_path"))
+  region_path="$zone_root/$region"
+  timezone="$region"
 
-  echo "Cities in $region:"
-  printf '%s\n' "${cities[@]}"
-  city="$(default_prompt 'City/Timezone' "${cities[RANDOM % ${#cities[@]}]}")"
-  [[ ! " ${cities[*]} " =~ " ${city} " ]] && { echo "Invalid city."; continue; }
-
-  timezone="$region/$city"
-  message yellow "Selected timezone: $timezone"
-  confirmation "Apply this timezone?" "yes" || { message yellow "Canceled. Try again."; continue; }
-
-  sudo ln -sf "$zone_root/$timezone" /etc/localtime
-  echo "$timezone" | sudo tee /etc/timezone >/dev/null
-  message green "Timezone set to $timezone"
-  break
+  while true; do
+    echo "Available cities in $timezone:"
+    ls "$region_path"
+    
+    cities=($(ls "$region_path"))
+    city=$(default_prompt "City/Timezone" "${cities[RANDOM % ${#cities[@]}]}")
+    
+    # Check if city exists in the cities list (case-insensitive match)
+    [[ ! " ${cities[*],,} " =~ " ${city,,} " ]] && { echo "Invalid city."; continue; }
+    
+    region_path="$region_path/$city"
+    timezone="$timezone/$city"
+    
+    [[ -f "$region_path" ]] && { message blue "Selected timezone: $timezone"; break 2; }
+  done
 done
