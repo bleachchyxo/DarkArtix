@@ -221,10 +221,5 @@ EOF
 # Cleanup sensitive variables
 unset rootpass1 rootpass2 userpass1 userpass2
 
-# Unmount system dirs
-for dir in dev proc sys run; do
-  umount -l "/mnt/$dir"
-done
-
 echo
 message green "Installation complete. Please reboot and remove the installation media."
