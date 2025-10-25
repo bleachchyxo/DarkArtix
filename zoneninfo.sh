@@ -31,7 +31,7 @@ confirmation() {
   [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
 }
 
-message blue "Setting the timezone"
+message blue "Setting the region"
 
 zone_root="/usr/share/zoneinfo"
 
