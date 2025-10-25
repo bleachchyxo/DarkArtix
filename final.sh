@@ -110,8 +110,8 @@ done
 
 # Hostname and username
 message blue "Hostname and username"
-hostname=$(ask "Hostname" "artix")
-username=$(ask "Username" "user")
+hostname=$(default_prompt "Hostname" "artix")
+username=$(default_prompt "Username" "user")
 
 # Setting password for root and user
 message blue "Passwords"
