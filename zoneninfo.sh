@@ -38,10 +38,8 @@ zone_root="/usr/share/zoneinfo"
 while true; do
   echo "Available continents:"
   echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
-  
   region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt "Continent" "America")")"
   region="${region^}"
-  
   [[ -d "$zone_root/$region" || -d "$zone_root/${region^^}" ]] || { echo "Invalid option."; continue; }
   region=$( [[ -d "$zone_root/$region" ]] && echo "$region" || echo "${region^^}" )
 
@@ -51,16 +49,17 @@ while true; do
   while true; do
     echo "Available cities in $timezone:"
     ls "$region_path"
-    
     cities=($(ls "$region_path"))
     city=$(default_prompt "City/Timezone" "${cities[RANDOM % ${#cities[@]}]}")
-    
-    # Check if city exists in the cities list (case-insensitive match)
-    [[ ! " ${cities[*],,} " =~ " ${city,,} " ]] && { echo "Invalid city."; continue; }
-    
-    region_path="$region_path/$city"
-    timezone="$timezone/$city"
-    
-    [[ -f "$region_path" ]] && { message blue "Selected timezone: $timezone"; break 2; }
+
+    chosen_city=""
+    for e in "${cities[@]}"; do [[ "${e,,}" == "${city,,}" ]] && chosen_city="$e" && break; done
+    [[ -z "$chosen_city" ]] && { echo "Invalid option."; continue; }
+
+    region_path="$region_path/$chosen_city"
+    timezone="$timezone/$chosen_city"
+    [[ -f "$region_path" ]] && break 2
   done
 done
+
+echo $timezone
