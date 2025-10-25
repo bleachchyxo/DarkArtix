@@ -209,7 +209,7 @@ ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || tr
 if [[ "$firmware" == "UEFI" ]]; then
   grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
-  grub-install --target=i386-pc "$disk"
+  grub-install --target=i386-pc "$disk_path"
 fi
 
 grub-mkconfig -o /boot/grub/grub.cfg
