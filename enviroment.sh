@@ -37,8 +37,6 @@ for repository in dwm dmenu st; do
   git -C "$HOME/.config" clone --depth 1 "https://git.suckless.org/$repository" "$HOME/.config/$repository"
 done
 
-chown -R "$USER:$USER" "$HOME/.config"
-
 # dmenu
 sed -i 's/static int topbar = 1;/static int topbar = 0;/' $HOME/.config/dmenu/config.def.h
 make -C $HOME/.config/dmenu install
@@ -58,3 +56,19 @@ curl -s -o $HOME/.config/st/st-alpha-20240814-a0274bc.diff https://st.suckless.o
 patch -d $HOME/.config/st < $HOME/.config/st/st-alpha-20240814-a0274bc.diff
 curl -s -o $HOME/.config/st/st-blinking_cursor-20230819-3a6d6d7.diff https://st.suckless.org/patches/blinking_cursor/st-blinking_cursor-20230819-3a6d6d7.diff
 patch -d $HOME/.config/st < $HOME/.config/st/st-blinking_cursor-20230819-3a6d6d7.diff
+sed -i 's|Liberation Mono:pixelsize=[0-9]*:antialias=true:autohint=true|Liberation Mono:pixelsize=26:antialias=true:autohint=true|' $HOME/.config/st/config.def.h
+sed -i 's/XK_Prior/XK_K/; s/XK_Next/XK_J/' $HOME/.config/st/config.def.h
+make -C $HOME/.config/dwm install
+rm $HOME/.config/st/*.diff $HOME/.config/st/*.orig
+
+# setting final details
+ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default/
+cat >> "$HOME/.bash_profile" <<'EOF'
+if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
+    startx
+fi
+EOF
+chown "$USER:$USER" "$HOME/.bash_profile"
+cat "$(dirname "$0")/Files/.xinitrc" > "$HOME/.xinitrc"
+chown -R "$USER:$USER" "$HOME/.config"
+chown -R "$USER:$USER" "$HOME/.xinitrc"
