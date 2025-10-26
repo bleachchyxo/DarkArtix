@@ -72,3 +72,5 @@ chown "$USER:$USER" "$HOME/.bash_profile"
 cat "$(dirname "$0")/Files/.xinitrc" > "$HOME/.xinitrc"
 chown -R "$USER:$USER" "$HOME/.config"
 chown -R "$USER:$USER" "$HOME/.xinitrc"
+
+message green "Enviroment succesfully installed. Reboot or type startx."
