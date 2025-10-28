@@ -81,7 +81,7 @@ if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
 fi
 EOF
 chown "$SUDO_USER:$SUDO_USER" "$USER_DIR/.bash_profile"
-cat "$(dirname "$0")/Files/.xinitrc" > "$USER_DIR/.xinitrc"
+cat "$(dirname "$0")/Files/xinitrc" > "$USER_DIR/.xinitrc"
 chown -R "$SUDO_USER:$SUDO_USER" "$USER_DIR/.config"
 chown -R "$SUDO_USER:$SUDO_USER" "$USER_DIR/.xinitrc"
 
