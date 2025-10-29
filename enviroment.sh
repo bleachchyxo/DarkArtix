@@ -61,7 +61,8 @@ sed -i 's/static const unsigned int gappx     = 5;/static const unsigned int gap
 sed -i '8s/topbar\s*=\s*1;/topbar = 0;/g' "$USER_DIR/.config/dwm/config.def.h"
 sed -i 's/#define MODKEY Mod1Mask/#define MODKEY Mod4Mask/' "$USER_DIR/.config/dwm/config.def.h"
 make -C "$USER_DIR/.config/dwm" install || { echo "dwm compilation failed"; exit 1; }
-rm "$USER_DIR/.config/dwm/dwm-fullgaps-20200508-7b77734.diff"
+rm $USER_DIR/.config/dwm/*.diff
+rm $USER_DIR/.config/dwm/*.orig
 
 # st setup with patches
 curl -s -o "$USER_DIR/.config/st/st-alpha-20240814-a0274bc.diff" https://st.suckless.org/patches/alpha/st-alpha-20240814-a0274bc.diff
@@ -71,7 +72,8 @@ patch -d "$USER_DIR/.config/st" < "$USER_DIR/.config/st/st-blinking_cursor-20230
 sed -i 's|Liberation Mono:pixelsize=[0-9]*:antialias=true:autohint=true|Liberation Mono:pixelsize=26:antialias=true:autohint=true|' "$USER_DIR/.config/st/config.def.h"
 sed -i 's/XK_Prior/XK_K/; s/XK_Next/XK_J/' "$USER_DIR/.config/st/config.def.h"
 make -C "$USER_DIR/.config/st" install || { echo "st compilation failed"; exit 1; }
-rm "$USER_DIR/.config/st/*.diff"
+rm $USER_DIR/.config/st/*.diff
+rm $USER_DIR/.config/st/*.orig
 
 # Setting final details
 ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default/
