@@ -68,7 +68,7 @@ rm $USER_DIR/.config/st/*.orig
 
 # Setting final details
 ln -s /etc/runit/sv/alsa /etc/runit/runsvdir/default/
-cat >> "$USER_DIR/.bash_profile" <<'EOF'
+cat > "$USER_DIR/.bash_profile" <<'EOF'
 if [[ -z $DISPLAY ]] && [[ $(tty) = /dev/tty1 ]]; then
     startx
 fi
