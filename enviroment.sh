@@ -19,15 +19,6 @@ message() {
   esac
 }
 
-#!/bin/bash
-set -euo pipefail
-
-# Ensure script is run with sudo
-if [[ -z "${SUDO_USER:-}" ]]; then
-  echo "This script must be run with sudo."
-  exit 1
-fi
-
 # Determine the real user
 USER_DIR="/home/$SUDO_USER"
 
