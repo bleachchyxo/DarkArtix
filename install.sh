@@ -70,6 +70,23 @@ disk_choice=$(default_prompt "Choose a disk to install" "$default_disk")
 disk_path="/dev/$disk_choice"
 
 if [[ -z "${disk_choice:-}" || ! -b "$disk_path" ]]; then
+echo "Invalid or missing disk selection."
+exit 1
+fi
+
+if [[ "$disk_path" =~ (nvme|mmcblk) ]]; then
+part_prefix="p"
+else
+part_prefix=""
+fi
+
+boot_partition="${disk_path}${part_prefix}1"
+root_partition="${disk_path}${part_prefix}2"
+home_partition="${disk_path}${part_prefix}3"
+
+confirmation "This will erase all data on $disk_path. Continue?" "no"
+
+if [[ -z "${disk_choice:-}" || ! -b "$disk_path" ]]; then
   echo "Invalid or missing disk selection."
   exit 1
 fi
@@ -146,6 +163,25 @@ for partition in $(lsblk -ln -o NAME "$disk_path" | tail -n +2); do
     [ -n "$mount_point" ] && umount "/dev/$partition"
 done
 
+if [[ "$firmware" == "UEFI" ]]; then
+fdisk "$disk_path" <<EOF
+g
+n
+1
+
++${boot_size}G
+t
+1
+n
+2
+
++${root_size}G
+n
+3
+
+w
+EOF
+else
 fdisk "$disk_path" <<EOF
 o
 n
@@ -162,25 +198,26 @@ n
 p
 3
 
-
 w
 EOF
-
-sleep 2
-
-if [ "$firmware" = "UEFI" ]; then
-  mkfs.fat -F32 "${disk_path}1"
-else
-  mkfs.ext4 -F "${disk_path}1"
 fi
-mkfs.ext4 -F "${disk_path}2"
-mkfs.ext4 -F "${disk_path}3"
 
-# Mounting partition directories
-mount "${disk_path}2" /mnt
+partprobe "$disk_path"
+udevadm settle
+
+if [[ "$firmware" == "UEFI" ]]; then
+mkfs.fat -F32 "$boot_partition"
+else
+mkfs.ext4 -F "$boot_partition"
+fi
+
+mkfs.ext4 -F "$root_partition"
+mkfs.ext4 -F "$home_partition"
+
+mount "$root_partition" /mnt
 mkdir -p /mnt/boot /mnt/home
-mount "${disk_path}1" /mnt/boot
-mount "${disk_path}3" /mnt/home
+mount "$boot_partition" /mnt/boot
+mount "$home_partition" /mnt/home
 
 # Installing the base system
 base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
