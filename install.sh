@@ -86,13 +86,6 @@ home_partition="${disk_path}${part_prefix}3"
 
 confirmation "This will erase all data on $disk_path. Continue?" "no"
 
-if [[ -z "${disk_choice:-}" || ! -b "$disk_path" ]]; then
-  echo "Invalid or missing disk selection."
-  exit 1
-fi
-
-confirmation "This will erase all data on $disk_path. Continue?" "no"
-
 # setting region
 message blue "Setting the region"
 zone_root="/usr/share/zoneinfo"
@@ -179,6 +172,7 @@ n
 n
 3
 
+
 w
 EOF
 else
@@ -197,6 +191,7 @@ p
 n
 p
 3
+
 
 w
 EOF
