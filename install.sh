@@ -197,51 +197,86 @@ w
 EOF
 fi
 
-partprobe "$disk_path"
+# Wait for kernel to detect new partitions
 udevadm settle
+sleep 2
 
+for p in "$boot_partition" "$root_partition" "$home_partition"; do
+    until [[ -b "$p" ]]; do
+        sleep 1
+    done
+done
+
+# Create filesystems
 if [[ "$firmware" == "UEFI" ]]; then
-mkfs.fat -F32 "$boot_partition"
+    mkfs.fat -F32 "$boot_partition"
 else
-mkfs.ext4 -F "$boot_partition"
+    mkfs.ext4 -F "$boot_partition"
 fi
 
 mkfs.ext4 -F "$root_partition"
 mkfs.ext4 -F "$home_partition"
 
+# Mount filesystems
 mount "$root_partition" /mnt
-mkdir -p /mnt/boot /mnt/home
+mkdir -p /mnt/{boot,home}
 mount "$boot_partition" /mnt/boot
 mount "$home_partition" /mnt/home
 
-# Installing the base system
-base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
+# Install base system
+base_packages=(
+    base
+    base-devel
+    runit
+    elogind-runit
+    linux
+    linux-firmware
+    neovim
+    networkmanager
+    networkmanager-runit
+    grub
+)
+
 [[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
 
 basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-# Configure system in chroot
+# Configure installed system
 artix-chroot /mnt /bin/bash <<EOF
-ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+set -e
+
+ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
 hwclock --systohc
 
 sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
 echo "$hostname" > /etc/hostname
-echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
+
+cat >> /etc/hosts <<HOSTS
+127.0.0.1 localhost
+::1 localhost
+127.0.1.1 $hostname.localdomain $hostname
+HOSTS
 
 useradd -m -G wheel "$username"
-sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
+sed -i \
+'s/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' \
+/etc/sudoers
+
+ln -sf /etc/runit/sv/NetworkManager \
+/etc/runit/runsvdir/default/NetworkManager
 
 if [[ "$firmware" == "UEFI" ]]; then
-  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+    grub-install \
+        --target=x86_64-efi \
+        --efi-directory=/boot \
+        --bootloader-id=GRUB
 else
-  grub-install --target=i386-pc "$disk_path"
+    grub-install --target=i386-pc "$disk_path"
 fi
 
 grub-mkconfig -o /boot/grub/grub.cfg
@@ -250,7 +285,6 @@ echo "root:$rootpass1" | chpasswd
 echo "$username:$userpass1" | chpasswd
 EOF
 
-# Cleanup sensitive variables
 unset rootpass1 rootpass2 userpass1 userpass2
 
 echo
