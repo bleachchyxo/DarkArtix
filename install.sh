@@ -50,19 +50,27 @@ echo "Available disks:"
 mapfile -t available_disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3=="disk" && $1!~/loop|ram/ {print $1, $2}')
 ((${#available_disks[@]})) || { echo "No disks detected."; exit 1; }
 
+max_name_length=0
 max_size_length=0
+
 for disk_entry in "${available_disks[@]}"; do
-  size_part="${disk_entry#* }"
-  (( ${#size_part} > max_size_length )) && max_size_length=${#size_part}
+  disk_name="${disk_entry%% *}"
+  disk_size="${disk_entry#* }"
+
+  (( ${#disk_name} > max_name_length )) && max_name_length=${#disk_name}
+  (( ${#disk_size} > max_size_length )) && max_size_length=${#disk_size}
 done
 
 for disk_entry in "${available_disks[@]}"; do
   disk_name="${disk_entry%% *}"
   disk_size="${disk_entry#* }"
   disk_path="/dev/$disk_name"
+
   partition_type=$(lsblk -dn -o PTTYPE "$disk_path")
   disk_model=$(fdisk -l "$disk_path" 2>/dev/null | awk -F: '/Disk model/ {gsub(/^ +/,"",$2); print $2}')
-  printf "  %-4s %-${max_size_length}s (%s)\n" "$disk_name" "$disk_size" "${disk_model:-$partition_type}"
+
+  printf "  %-${max_name_length}s  %-${max_size_length}s (%s)\n" \
+    "$disk_name" "$disk_size" "${disk_model:-$partition_type}"
 done
 
 default_disk="${available_disks[0]%% *}"
@@ -70,9 +78,19 @@ disk_choice=$(default_prompt "Choose a disk to install" "$default_disk")
 disk_path="/dev/$disk_choice"
 
 if [[ -z "${disk_choice:-}" || ! -b "$disk_path" ]]; then
-  echo "Invalid or missing disk selection."
-  exit 1
+echo "Invalid or missing disk selection."
+exit 1
 fi
+
+if [[ "$disk_path" =~ (nvme|mmcblk) ]]; then
+part_prefix="p"
+else
+part_prefix=""
+fi
+
+boot_partition="${disk_path}${part_prefix}1"
+root_partition="${disk_path}${part_prefix}2"
+home_partition="${disk_path}${part_prefix}3"
 
 confirmation "This will erase all data on $disk_path. Continue?" "no"
 
@@ -146,6 +164,26 @@ for partition in $(lsblk -ln -o NAME "$disk_path" | tail -n +2); do
     [ -n "$mount_point" ] && umount "/dev/$partition"
 done
 
+if [[ "$firmware" == "UEFI" ]]; then
+fdisk "$disk_path" <<EOF
+g
+n
+1
+
++${boot_size}G
+t
+1
+n
+2
+
++${root_size}G
+n
+3
+
+
+w
+EOF
+else
 fdisk "$disk_path" <<EOF
 o
 n
@@ -165,51 +203,88 @@ p
 
 w
 EOF
+fi
 
+# Wait for kernel to detect new partitions
+udevadm settle
 sleep 2
 
-if [ "$firmware" = "UEFI" ]; then
-  mkfs.fat -F32 "${disk_path}1"
+for p in "$boot_partition" "$root_partition" "$home_partition"; do
+    until [[ -b "$p" ]]; do
+        sleep 1
+    done
+done
+
+# Create filesystems
+if [[ "$firmware" == "UEFI" ]]; then
+    mkfs.fat -F32 "$boot_partition"
 else
-  mkfs.ext4 -F "${disk_path}1"
+    mkfs.ext4 -F "$boot_partition"
 fi
-mkfs.ext4 -F "${disk_path}2"
-mkfs.ext4 -F "${disk_path}3"
 
-# Mounting partition directories
-mount "${disk_path}2" /mnt
-mkdir -p /mnt/boot /mnt/home
-mount "${disk_path}1" /mnt/boot
-mount "${disk_path}3" /mnt/home
+mkfs.ext4 -F "$root_partition"
+mkfs.ext4 -F "$home_partition"
 
-# Installing the base system
-base_packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
+# Mount filesystems
+mount "$root_partition" /mnt
+mkdir -p /mnt/{boot,home}
+mount "$boot_partition" /mnt/boot
+mount "$home_partition" /mnt/home
+
+# Install base system
+base_packages=(
+    base
+    base-devel
+    runit
+    elogind-runit
+    linux
+    linux-firmware
+    neovim
+    networkmanager
+    networkmanager-runit
+    grub
+)
+
 [[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
 
 basestrap /mnt "${base_packages[@]}"
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-# Configure system in chroot
+# Configure installed system
 artix-chroot /mnt /bin/bash <<EOF
-ln -sf /usr/share/zoneinfo/$timezone /etc/localtime
+set -e
+
+ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
 hwclock --systohc
 
 sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
 echo "$hostname" > /etc/hostname
-echo -e "127.0.1.1 \t$hostname.localdomain $hostname" >> /etc/hosts
+
+cat >> /etc/hosts <<HOSTS
+127.0.0.1 localhost
+::1 localhost
+127.0.1.1 $hostname.localdomain $hostname
+HOSTS
 
 useradd -m -G wheel "$username"
-sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default 2>/dev/null || true
+sed -i \
+'s/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' \
+/etc/sudoers
+
+ln -sf /etc/runit/sv/NetworkManager \
+/etc/runit/runsvdir/default/NetworkManager
 
 if [[ "$firmware" == "UEFI" ]]; then
-  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+    grub-install \
+        --target=x86_64-efi \
+        --efi-directory=/boot \
+        --bootloader-id=GRUB
 else
-  grub-install --target=i386-pc "$disk_path"
+    grub-install --target=i386-pc "$disk_path"
 fi
 
 grub-mkconfig -o /boot/grub/grub.cfg
@@ -218,7 +293,6 @@ echo "root:$rootpass1" | chpasswd
 echo "$username:$userpass1" | chpasswd
 EOF
 
-# Cleanup sensitive variables
 unset rootpass1 rootpass2 userpass1 userpass2
 
 echo
