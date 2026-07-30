@@ -15,108 +15,119 @@ battery_icon() {
 }
 
 volume_icon() {
-    [ "$2" = off ] && { echo ""; return; }
-    [ "$1" -eq 0 ] && { echo ""; return; }
-    [ "$1" -le 50 ] && { echo ""; return; }
+    [ "$2" = off ] && echo "" && return
+    [ "$1" -eq 0 ] && echo "" && return
+    [ "$1" -le 50 ] && echo "" && return
     echo ""
 }
 
 have_audio=0
 aplay -l 2>/dev/null | grep -q '^card' && have_audio=1
 
-battery=
-for b in /sys/class/power_supply/BAT*; do
-    [ -d "$b" ] && { battery=$b; break; }
-done
-
-last_minute=
 last_time=
+last_minute=
 last_volume=
 last_network=
 last_battery=
-
+last_capacity=100
 low_warned=0
 critical_warned=0
+tick=0
 
 while :; do
     updated=0
+    tick=$((tick + 1))
 
+    # Time
     minute=$(date +%M)
     if [ "$minute" != "$last_minute" ]; then
-        last_time=$(date '+%-I:%M %p')
         last_minute=$minute
+        last_time=$(date '+%-I:%M %p')
         updated=1
     fi
 
+    # Volume (fast polling)
     if [ "$have_audio" -eq 1 ]; then
         set -- $(amixer get Master | awk -F'[][]' '
-            /Mono:/||/Left:/ {gsub("%",""); print $2, $6; exit}
-            /Playback.*%/   {gsub("%",""); print $2, $4; exit}
+            /Mono:/||/Left:/ {gsub("%",""); print $2,$6; exit}
+            /Playback.*%/ {gsub("%",""); print $2,$4; exit}
         ')
 
-        icon=$(volume_icon "$1" "$2")
+        volume_status="$(volume_icon "$1" "$2")"
 
         if [ "$2" = off ]; then
-            volume_status="$icon Muted"
+            volume_status="$volume_status Muted"
         elif [ "$1" -eq 0 ]; then
-            volume_status="$icon 0%"
+            volume_status="$volume_status 0%"
         else
-            volume_status="$icon $1%"
+            volume_status="$volume_status $1%"
         fi
 
-        if [ "$volume_status" != "$last_volume" ]; then
-            last_volume=$volume_status
-            updated=1
-        fi
+        [ "$volume_status" != "$last_volume" ] &&
+            last_volume=$volume_status updated=1
     fi
 
-    network_status=" Offline"
-    for dev in /sys/class/net/*; do
-        [ -f "$dev/operstate" ] || continue
-        read -r state < "$dev/operstate"
-        [ "$state" = up ] || continue
-        iface=${dev##*/}
-        case $iface in
-            wl*) network_status=" $iface" ;;
-            *)   network_status=" $iface" ;;
-        esac
-        break
-    done
+    # Network (twice per second)
+    if [ $((tick % 5)) -eq 0 ]; then
+        network_status=" Offline"
 
-    if [ "$network_status" != "$last_network" ]; then
-        last_network=$network_status
-        updated=1
+        for dev in /sys/class/net/*; do
+            [ -f "$dev/operstate" ] || continue
+            read -r state < "$dev/operstate"
+            [ "$state" = up ] || continue
+
+            iface=${dev##*/}
+            case $iface in
+                wl*) network_status=" $iface" ;;
+                *)   network_status=" $iface" ;;
+            esac
+            break
+        done
+
+        [ "$network_status" != "$last_network" ] &&
+            last_network=$network_status updated=1
     fi
 
-    if [ -n "$battery" ]; then
-        read -r capacity < "$battery/capacity"
-        read -r status < "$battery/status"
+    # Battery (once per second, detects removal/insertion)
+    if [ $((tick % 10)) -eq 0 ]; then
+        battery=
 
-        icon=$(battery_icon "$capacity")
-        [ "$status" = Charging ] && icon="⚡$icon"
-        battery_status="$icon $capacity%"
+        for b in /sys/class/power_supply/BAT*; do
+            [ -d "$b" ] && { battery=$b; break; }
+        done
 
-        if [ "$battery_status" != "$last_battery" ]; then
-            last_battery=$battery_status
-            updated=1
-        fi
+        if [ -n "$battery" ]; then
+            read -r capacity < "$battery/capacity"
+            read -r state < "$battery/status"
 
-        if [ "$status" = Discharging ]; then
-            if [ "$capacity" -le 5 ]; then
-                if [ "$critical_warned" -eq 0 ]; then
-                    notify-send "Critical Battery" "Battery at $capacity%. Connect the charger."
-                    critical_warned=1
-                fi
-            elif [ "$capacity" -le 10 ]; then
-                if [ "$low_warned" -eq 0 ]; then
+            icon=$(battery_icon "$capacity")
+            [ "$state" = Charging ] && icon="⚡$icon"
+
+            battery_status="$icon $capacity%"
+
+            [ "$battery_status" != "$last_battery" ] &&
+                last_battery=$battery_status updated=1
+
+            if [ "$state" = Discharging ]; then
+                if [ "$last_capacity" -gt 10 ] &&
+                   [ "$capacity" -le 10 ]; then
                     notify-send "Low Battery" "Battery at $capacity%. Please charge."
                     low_warned=1
                 fi
-            fi
-        fi
 
-        [ "$capacity" -gt 10 ] && low_warned=0
-        [ "$capacity" -gt 5 ] && critical_warned=0
+                if [ "$last_capacity" -gt 5 ] &&
+                   [ "$capacity" -le 5 ]; then
+                    notify-send "Critical Battery" "Battery at $capacity%. Connect the charger."
+                    critical_warned=1
+                fi
+            fi
+
+            last_capacity=$capacity
+        else
+            [ -n "$last_battery" ] && updated=1
+            last_battery=
+            last_capacity=100
+        fi
     fi
 
     if [ "$updated" -eq 1 ]; then
@@ -126,7 +137,7 @@ while :; do
         xsetroot -name "$status | $last_time "
     fi
 
-    sleep 1
+    sleep .1
 done &
 
 exec dwm
