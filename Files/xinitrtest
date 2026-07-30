@@ -4,8 +4,6 @@
 
 pgrep -x xcompmgr >/dev/null || xcompmgr -C -t .25 -r 2.2 -o .25 &
 
-trap 'kill 0' EXIT
-
 battery_icon() {
     case $1 in
         9[5-9]|100) echo "" ;;
@@ -28,9 +26,7 @@ aplay -l 2>/dev/null | grep -q '^card' && have_audio=1
 
 battery=
 for b in /sys/class/power_supply/BAT*; do
-    [ -d "$b" ] || continue
-    battery=$b
-    break
+    [ -d "$b" ] && { battery=$b; break; }
 done
 
 last_minute=
@@ -38,7 +34,9 @@ last_time=
 last_volume=
 last_network=
 last_battery=
-last_battery_warn=
+
+low_warned=0
+critical_warned=0
 
 while :; do
     updated=0
@@ -50,13 +48,14 @@ while :; do
         updated=1
     fi
 
-    volume_status=
     if [ "$have_audio" -eq 1 ]; then
         set -- $(amixer get Master | awk -F'[][]' '
             /Mono:/||/Left:/ {gsub("%",""); print $2, $6; exit}
             /Playback.*%/   {gsub("%",""); print $2, $4; exit}
         ')
+
         icon=$(volume_icon "$1" "$2")
+
         if [ "$2" = off ]; then
             volume_status="$icon Muted"
         elif [ "$1" -eq 0 ]; then
@@ -64,10 +63,11 @@ while :; do
         else
             volume_status="$icon $1%"
         fi
-        [ "$volume_status" != "$last_volume" ] && {
+
+        if [ "$volume_status" != "$last_volume" ]; then
             last_volume=$volume_status
             updated=1
-        }
+        fi
     fi
 
     network_status=" Offline"
@@ -82,28 +82,41 @@ while :; do
         esac
         break
     done
-    [ "$network_status" != "$last_network" ] && {
+
+    if [ "$network_status" != "$last_network" ]; then
         last_network=$network_status
         updated=1
-    }
+    fi
 
-    battery_status=
     if [ -n "$battery" ]; then
         read -r capacity < "$battery/capacity"
         read -r status < "$battery/status"
+
         icon=$(battery_icon "$capacity")
         [ "$status" = Charging ] && icon="⚡$icon"
         battery_status="$icon $capacity%"
 
-        if [ "$capacity" -le 30 ] && [ "$battery_status" != "$last_battery_warn" ]; then
-            notify-send "Low Battery" "Battery at $capacity%. Please charge."
-            last_battery_warn=$battery_status
-        fi
-
-        [ "$battery_status" != "$last_battery" ] && {
+        if [ "$battery_status" != "$last_battery" ]; then
             last_battery=$battery_status
             updated=1
-        }
+        fi
+
+        if [ "$status" = Discharging ]; then
+            if [ "$capacity" -le 5 ]; then
+                if [ "$critical_warned" -eq 0 ]; then
+                    notify-send "Critical Battery" "Battery at $capacity%. Connect the charger."
+                    critical_warned=1
+                fi
+            elif [ "$capacity" -le 10 ]; then
+                if [ "$low_warned" -eq 0 ]; then
+                    notify-send "Low Battery" "Battery at $capacity%. Please charge."
+                    low_warned=1
+                fi
+            fi
+        fi
+
+        [ "$capacity" -gt 10 ] && low_warned=0
+        [ "$capacity" -gt 5 ] && critical_warned=0
     fi
 
     if [ "$updated" -eq 1 ]; then
