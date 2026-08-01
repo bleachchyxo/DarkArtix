@@ -1,26 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-print_step() {
-  local color="$1" msg="$2"
-  case "$color" in
-    red)   echo -e "\033[31m[!]\033[0m $msg" ;;
-    green) echo -e "\033[32m[+]\033[0m $msg" ;;
-    blue)  echo -e "\033[34m[+]\033[0m $msg" ;;
-    *)     echo "[+] $msg" ;;
-  esac
-}
-
+print_step()      { echo -e "\033[32m[+]\033[0m $1"; }
 prompt_default()  { read -rp "$1 [$2]: " answer; echo "${answer:-$2}"; }
-confirm_or_exit() { read -rp "$1 [y/N]: " answer; [[ "${answer,,}" =~ ^y ]] || { print_step red "Aborted."; exit 1; }; }
+confirm_or_exit() { read -rp "$1 [y/N]: " answer; [[ "${answer,,}" =~ ^y ]] || { echo "Aborted."; exit 1; }; }
 
-ensure_running_as_root() { [[ $EUID -eq 0 ]] || { print_step red "Please run as root."; exit 1; }; }
+ensure_running_as_root() { [[ $EUID -eq 0 ]] || { echo "Please run as root."; exit 1; }; }
 detect_firmware()        { [[ -d /sys/firmware/efi ]] && echo UEFI || echo BIOS; }
 
 select_disk() {
-  echo "Available disks:"
+  echo "Available disks:" >&2
   mapfile -t available_disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3=="disk" && $1!~/loop|ram/ {print $1, $2}')
-  ((${#available_disks[@]})) || { print_step red "No disks detected."; exit 1; }
+  ((${#available_disks[@]})) || { echo "No disks detected." >&2; exit 1; }
 
   local max_name_length=0 max_size_length=0
   for disk_entry in "${available_disks[@]}"; do
@@ -36,26 +27,25 @@ select_disk() {
     partition_type=$(lsblk -dn -o PTTYPE "$disk_path")
     disk_model=$(fdisk -l "$disk_path" 2>/dev/null | awk -F: '/Disk model/ {gsub(/^ +/,"",$2); print $2}')
     printf "  %-${max_name_length}s  %-${max_size_length}s (%s)\n" \
-      "$disk_name" "$disk_size" "${disk_model:-$partition_type}"
+      "$disk_name" "$disk_size" "${disk_model:-$partition_type}" >&2
   done
 
-  local disk_name
-  disk_name=$(prompt_default "Choose a disk to install" "${available_disks[0]%% *}")
-  [[ -b "/dev/$disk_name" ]] || { print_step red "Invalid disk."; exit 1; }
+  local disk_name; disk_name=$(prompt_default "Choose a disk" "${available_disks[0]%% *}")
+  [[ -b "/dev/$disk_name" ]] || { echo "Invalid disk." >&2; exit 1; }
   echo "/dev/$disk_name"
 }
 
 # finds a subdirectory of $1 matching $2 case-insensitively, or exits
 find_matching_subdirectory() {
   local matched_name; matched_name=$(find "$1" -maxdepth 1 -iname "$2" -printf '%f' | head -n1)
-  [[ -n "$matched_name" ]] || { print_step red "Invalid option: $2"; exit 1; }
+  [[ -n "$matched_name" ]] || { echo "Invalid option: $2" >&2; exit 1; }
   echo "$matched_name"
 }
 
 select_timezone() {
   local zoneinfo_root=/usr/share/zoneinfo continent city
-  echo "Available continents:"
-  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
+  echo "Available continents:" >&2
+  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US" >&2
   continent=$(find_matching_subdirectory "$zoneinfo_root" "$(prompt_default "Continent" "America")")
   ls "$zoneinfo_root/$continent" >&2
   city=$(find_matching_subdirectory "$zoneinfo_root/$continent" "$(prompt_default "City" "$(ls "$zoneinfo_root/$continent" | shuf -n1)")")
@@ -67,7 +57,7 @@ read_confirmed_password() {
   while true; do
     read -rsp "$label: " password; echo >&2
     read -rsp "Confirm $label: " password_confirmation; echo >&2
-    [[ -n "$password" && "$password" == "$password_confirmation" ]] && break || print_step red "Mismatch, try again."
+    [[ -n "$password" && "$password" == "$password_confirmation" ]] && break || echo "Mismatch, try again." >&2
   done
   echo "$password"
 }
@@ -139,7 +129,7 @@ EOF
     until [[ -b "$partition_path" || $attempts_remaining -eq 0 ]]; do
       sleep 1; ((attempts_remaining--))
     done
-    [[ -b "$partition_path" ]] || { print_step red "Partition $partition_path never appeared."; exit 1; }
+    [[ -b "$partition_path" ]] || { echo "Partition $partition_path never appeared." >&2; exit 1; }
   done
 
   if [[ "$firmware" == UEFI ]]; then mkfs.fat -F32 "$BOOT_PARTITION"; else mkfs.ext4 -F "$BOOT_PARTITION"; fi
@@ -198,32 +188,27 @@ main() {
   echo "DarkArtix Installer v0.1"
   echo "Firmware: $firmware"
 
-  print_step blue "Choosing a disk"
+  print_step "Choosing a disk"
   disk=$(select_disk)
   confirm_or_exit "This will erase all data on $disk. Continue?"
 
-  print_step blue "Setting the region"
+  print_step "Setting the region"
   timezone=$(select_timezone)
 
-  print_step blue "Hostname and username"
+  print_step "Hostname and username"
   hostname=$(prompt_default "Hostname" "artix")
   username=$(prompt_default "Username" "user")
 
-  print_step blue "Passwords"
+  print_step "Passwords"
   root_password=$(read_confirmed_password "Root password")
   user_password=$(read_confirmed_password "Password for $username")
 
-  print_step blue "Partitioning and formatting disk"
   prepare_disk_partitions "$disk" "$firmware"
-
-  print_step blue "Installing base packages"
   install_base_packages "$firmware"
-
-  print_step blue "Configuring system"
   configure_system "$firmware" "$timezone" "$hostname" "$username" "$disk" "$root_password" "$user_password"
 
   unset root_password user_password
-  print_step green "Installation complete. Please reboot and remove the installation media."
+  print_step "Installation complete. Please reboot and remove the installation media."
 }
 
 main "$@"
