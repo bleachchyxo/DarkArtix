@@ -1,171 +1,73 @@
 #!/bin/bash
 set -euo pipefail
 
-# Check if the script is run as root
-if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root."
-  exit 1
-fi
-
-firmware="BIOS"
-[ -d /sys/firmware/efi ] && firmware="UEFI"
-
-# Function to print colored messages
-message() {
-  local color="$1"
-  local msg="$2"
-  case "$color" in
-    green)  echo -e "\033[32m[+]\033[0m $msg" ;;
-    yellow) echo -e "\033[33m[+]\033[0m $msg" ;;
-    blue)   echo -e "\033[34m[+]\033[0m $msg" ;;
-    *)      echo "[+] $msg" ;;
-  esac
+msg() { echo -e "\033[32m[+]\033[0m $1"; }
+ask() { local p="$1" d="$2"; read -rp "$p [$d]: " r; echo "${r:-$d}"; }
+confirm() {
+  read -rp "$1 [y/N]: " a
+  [[ "${a,,}" =~ ^y ]] || { echo "Aborted."; exit 1; }
 }
 
-# Prompt with default value
-default_prompt() {
-  local prompt="$1"
-  local default="$2"
-  read -rp "$prompt [$default]: " input
-  echo "${input:-$default}"
+check_root() {
+  [[ $EUID -eq 0 ]] || { echo "Please run as root."; exit 1; }
 }
 
-# Yes/No confirmation prompt with default answer
-confirmation() {
-  local prompt="$1"
-  local default="${2:-no}"
-  local yn_format
-  [[ "${default,,}" =~ ^(yes|y)$ ]] && yn_format="[Y/n]" || yn_format="[y/N]"
-  read -rp "$prompt $yn_format: " answer
-  answer="${answer:-$default}"
-  [[ "${answer,,}" =~ ^(yes|y)$ ]] || { echo "Aborted."; exit 1; }
+detect_firmware() {
+  [[ -d /sys/firmware/efi ]] && echo UEFI || echo BIOS
 }
 
-echo "DarkArtix Installer v0.1"
-echo "Firmware: $firmware"
+select_disk() {
+  echo "Available disks:" >&2
+  mapfile -t disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3=="disk" && $1!~/loop|ram/ {print $1, $2}')
+  ((${#disks[@]})) || { echo "No disks detected." >&2; exit 1; }
+  for e in "${disks[@]}"; do echo "  $e" >&2; done
+  local choice; choice=$(ask "Choose a disk" "${disks[0]%% *}")
+  [[ -b "/dev/$choice" ]] || { echo "Invalid disk." >&2; exit 1; }
+  echo "/dev/$choice"
+}
 
-# Choosing a disk to install
-message blue "Choosing a disk"
-echo "Available disks:"
-mapfile -t available_disks < <(lsblk -dno NAME,SIZE,TYPE | awk '$3=="disk" && $1!~/loop|ram/ {print $1, $2}')
-((${#available_disks[@]})) || { echo "No disks detected."; exit 1; }
+select_timezone() {
+  local root=/usr/share/zoneinfo region city
+  region=$(ask "Continent" "America" >&2; true)
+  region=$(ask "Continent" "America")
+  region=$(find "$root" -maxdepth 1 -iname "$region" -printf '%f' | head -n1)
+  [[ -d "$root/$region" ]] || { echo "Invalid continent." >&2; exit 1; }
+  echo "Cities in $region:" >&2
+  ls "$root/$region" >&2
+  city=$(ask "City" "$(ls "$root/$region" | shuf -n1)")
+  city=$(find "$root/$region" -maxdepth 1 -iname "$city" -printf '%f' | head -n1)
+  [[ -f "$root/$region/$city" ]] || { echo "Invalid city." >&2; exit 1; }
+  echo "$region/$city"
+}
 
-max_name_length=0
-max_size_length=0
-
-for disk_entry in "${available_disks[@]}"; do
-  disk_name="${disk_entry%% *}"
-  disk_size="${disk_entry#* }"
-
-  (( ${#disk_name} > max_name_length )) && max_name_length=${#disk_name}
-  (( ${#disk_size} > max_size_length )) && max_size_length=${#disk_size}
-done
-
-for disk_entry in "${available_disks[@]}"; do
-  disk_name="${disk_entry%% *}"
-  disk_size="${disk_entry#* }"
-  disk_path="/dev/$disk_name"
-
-  partition_type=$(lsblk -dn -o PTTYPE "$disk_path")
-  disk_model=$(fdisk -l "$disk_path" 2>/dev/null | awk -F: '/Disk model/ {gsub(/^ +/,"",$2); print $2}')
-
-  printf "  %-${max_name_length}s  %-${max_size_length}s (%s)\n" \
-    "$disk_name" "$disk_size" "${disk_model:-$partition_type}"
-done
-
-default_disk="${available_disks[0]%% *}"
-disk_choice=$(default_prompt "Choose a disk to install" "$default_disk")
-disk_path="/dev/$disk_choice"
-
-if [[ -z "${disk_choice:-}" || ! -b "$disk_path" ]]; then
-echo "Invalid or missing disk selection."
-exit 1
-fi
-
-if [[ "$disk_path" =~ (nvme|mmcblk) ]]; then
-part_prefix="p"
-else
-part_prefix=""
-fi
-
-boot_partition="${disk_path}${part_prefix}1"
-root_partition="${disk_path}${part_prefix}2"
-home_partition="${disk_path}${part_prefix}3"
-
-confirmation "This will erase all data on $disk_path. Continue?" "no"
-
-# setting region
-message blue "Setting the region"
-zone_root="/usr/share/zoneinfo"
-
-while true; do
-  echo "Available continents:"
-  echo "Africa  America  Antarctica  Asia  Atlantic  Australia  Europe  Mexico  Pacific  US"
-  region="$(tr '[:upper:]' '[:lower:]' <<< "$(default_prompt "Continent" "America")")"
-  region="${region^}"
-  [[ -d "$zone_root/$region" || -d "$zone_root/${region^^}" ]] || { echo "Invalid option."; continue; }
-  region=$( [[ -d "$zone_root/$region" ]] && echo "$region" || echo "${region^^}" )
-
-  region_path="$zone_root/$region"
-  timezone="$region"
-
+read_password() {
+  local label="$1" p1 p2
   while true; do
-    echo "Available cities in $timezone:"
-    ls "$region_path"
-    cities=($(ls "$region_path"))
-    city=$(default_prompt "City/Timezone" "${cities[RANDOM % ${#cities[@]}]}")
-
-    chosen_city=""
-    for e in "${cities[@]}"; do [[ "${e,,}" == "${city,,}" ]] && chosen_city="$e" && break; done
-    [[ -z "$chosen_city" ]] && { echo "Invalid option."; continue; }
-
-    region_path="$region_path/$chosen_city"
-    timezone="$timezone/$chosen_city"
-    [[ -f "$region_path" ]] && break 2
+    read -rsp "$label: " p1; echo >&2
+    read -rsp "Confirm $label: " p2; echo >&2
+    [[ -n "$p1" && "$p1" == "$p2" ]] && break || echo "Mismatch, try again." >&2
   done
-done
+  echo "$p1"
+}
 
-# Hostname and username
-message blue "Hostname and username"
-hostname=$(default_prompt "Hostname" "artix")
-username=$(default_prompt "Username" "user")
+partition_sizes() {
+  local disk="$1" name gb
+  name=$(basename "$disk")
+  gb=$(( $(< "/sys/block/$name/size") * $(< "/sys/block/$name/queue/hw_sector_size") / 1024**3 ))
+  if   ((gb < 20));  then echo "0.5 4"
+  elif ((gb < 40));  then echo "1 8"
+  elif ((gb < 100)); then echo "1 20"
+  else                    echo "1 30"
+  fi
+}
 
-# Setting password for root and user
-message blue "Passwords"
-echo "Set root password:"
-while true; do
-  read -s -p "Root password: " rootpass1; echo
-  read -s -p "Confirm root password: " rootpass2; echo
-  [[ "$rootpass1" == "$rootpass2" && -n "$rootpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
-done
-
-# Prompt for user password
-echo "Set password for user '$username':"
-while true; do
-  read -s -p "User password: " userpass1; echo
-  read -s -p "Confirm user password: " userpass2; echo
-  [[ "$userpass1" == "$userpass2" && -n "$userpass1" ]] && break || echo "Passwords do not match or are empty. Try again."
-done
-
-# formatting disk and creating partitions
-disk_name=$(basename "$disk_path")
-total_gb=$(( $(< /sys/block/$disk_name/size) * $(< /sys/block/$disk_name/queue/hw_sector_size) / 1024 / 1024 / 1024 ))
-
-case $total_gb in
-  [0-9]) boot_size=0.5 root_size=4 ;;
-  1[0-9]) boot_size=0.5 root_size=6 ;;
-  2[0-9]|3[0-9]) boot_size=1 root_size=8 ;;
-  [4-9][0-9]) boot_size=1 root_size=20 ;;
-  1[0-9][0-9]|*) boot_size=1 root_size=30 ;;
-esac
-
-for partition in $(lsblk -ln -o NAME "$disk_path" | tail -n +2); do
-    mount_point=$(lsblk -ln -o MOUNTPOINT "/dev/$partition")
-    [ -n "$mount_point" ] && umount "/dev/$partition"
-done
-
-if [[ "$firmware" == "UEFI" ]]; then
-fdisk "$disk_path" <<EOF
+partition_disk() {
+  local disk="$1" fw="$2" boot_size="$3" root_size="$4"
+  for p in $(lsblk -ln -o NAME "$disk" | tail -n +2); do
+    mountpoint -q "/dev/$p" 2>/dev/null && umount "/dev/$p"
+  done
+  if [[ "$fw" == UEFI ]]; then
+    fdisk "$disk" <<EOF
 g
 n
 1
@@ -183,8 +85,8 @@ n
 
 w
 EOF
-else
-fdisk "$disk_path" <<EOF
+  else
+    fdisk "$disk" <<EOF
 o
 n
 p
@@ -203,97 +105,115 @@ p
 
 w
 EOF
-fi
+  fi
+  udevadm settle; sleep 2
+}
 
-# Wait for kernel to detect new partitions
-udevadm settle
-sleep 2
+partition_paths() {
+  local disk="$1" prefix=""
+  [[ "$disk" =~ (nvme|mmcblk) ]] && prefix="p"
+  echo "${disk}${prefix}1 ${disk}${prefix}2 ${disk}${prefix}3"
+}
 
-for p in "$boot_partition" "$root_partition" "$home_partition"; do
-    until [[ -b "$p" ]]; do
-        sleep 1
-    done
-done
+wait_for_partitions() {
+  local tries=30
+  for p in "$@"; do
+    until [[ -b "$p" || $tries -eq 0 ]]; do sleep 1; ((tries--)); done
+    [[ -b "$p" ]] || { echo "Partition $p never appeared." >&2; exit 1; }
+  done
+}
 
-# Create filesystems
-if [[ "$firmware" == "UEFI" ]]; then
-    mkfs.fat -F32 "$boot_partition"
-else
-    mkfs.ext4 -F "$boot_partition"
-fi
+format_partitions() {
+  local fw="$1" boot="$2" root="$3" home="$4"
+  if [[ "$fw" == UEFI ]]; then mkfs.fat -F32 "$boot"; else mkfs.ext4 -F "$boot"; fi
+  mkfs.ext4 -F "$root"
+  mkfs.ext4 -F "$home"
+}
 
-mkfs.ext4 -F "$root_partition"
-mkfs.ext4 -F "$home_partition"
+mount_partitions() {
+  local boot="$1" root="$2" home="$3"
+  mount "$root" /mnt
+  mkdir -p /mnt/boot /mnt/home
+  mount "$boot" /mnt/boot
+  mount "$home" /mnt/home
+}
 
-# Mount filesystems
-mount "$root_partition" /mnt
-mkdir -p /mnt/{boot,home}
-mount "$boot_partition" /mnt/boot
-mount "$home_partition" /mnt/home
+install_base() {
+  local fw="$1"
+  local pkgs=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
+  [[ "$fw" == UEFI ]] && pkgs+=(efibootmgr)
+  basestrap /mnt "${pkgs[@]}"
+  fstabgen -U /mnt >> /mnt/etc/fstab
+}
 
-# Install base system
-base_packages=(
-    base
-    base-devel
-    runit
-    elogind-runit
-    linux
-    linux-firmware
-    neovim
-    networkmanager
-    networkmanager-runit
-    grub
-)
-
-[[ "$firmware" == "UEFI" ]] && base_packages+=(efibootmgr)
-
-basestrap /mnt "${base_packages[@]}"
-fstabgen -U /mnt >> /mnt/etc/fstab
-
-# Configure installed system
-artix-chroot /mnt /bin/bash <<EOF
+configure_system() {
+  local fw="$1" tz="$2" hostname="$3" username="$4" disk="$5" rootpass="$6" userpass="$7"
+  artix-chroot /mnt /bin/bash <<EOF
 set -e
-
-ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
+ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
 hwclock --systohc
-
 sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen
-
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 echo "$hostname" > /etc/hostname
-
 cat >> /etc/hosts <<HOSTS
 127.0.0.1 localhost
 ::1 localhost
 127.0.1.1 $hostname.localdomain $hostname
 HOSTS
-
 useradd -m -G wheel "$username"
-
-sed -i \
-'s/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' \
-/etc/sudoers
-
-ln -sf /etc/runit/sv/NetworkManager \
-/etc/runit/runsvdir/default/NetworkManager
-
-if [[ "$firmware" == "UEFI" ]]; then
-    grub-install \
-        --target=x86_64-efi \
-        --efi-directory=/boot \
-        --bootloader-id=GRUB
+sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+ln -sf /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default/NetworkManager
+if [[ "$fw" == UEFI ]]; then
+  grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
-    grub-install --target=i386-pc "$disk_path"
+  grub-install --target=i386-pc "$disk"
 fi
-
 grub-mkconfig -o /boot/grub/grub.cfg
-
-echo "root:$rootpass1" | chpasswd
-echo "$username:$userpass1" | chpasswd
+echo "root:$rootpass" | chpasswd
+echo "$username:$userpass" | chpasswd
+history -c
 EOF
+}
 
-unset rootpass1 rootpass2 userpass1 userpass2
+main() {
+  check_root
+  local fw hostname username rootpass userpass disk tz sizes boot_size root_size
+  local boot_part root_part home_part
 
-echo
-message green "Installation complete. Please reboot and remove the installation media."
+  fw=$(detect_firmware)
+  echo "DarkArtix Installer v0.1"
+  echo "Firmware: $fw"
+
+  msg "Choosing a disk"
+  disk=$(select_disk)
+  confirm "This will erase all data on $disk. Continue?"
+
+  msg "Setting the region"
+  tz=$(select_timezone)
+
+  msg "Hostname and username"
+  hostname=$(ask "Hostname" "artix")
+  username=$(ask "Username" "user")
+
+  msg "Passwords"
+  rootpass=$(read_password "Root password")
+  userpass=$(read_password "Password for $username")
+
+  read -r boot_size root_size <<< "$(partition_sizes "$disk" "$fw")"
+  partition_disk "$disk" "$fw" "$boot_size" "$root_size"
+
+  read -r boot_part root_part home_part <<< "$(partition_paths "$disk")"
+  wait_for_partitions "$boot_part" "$root_part" "$home_part"
+
+  format_partitions "$fw" "$boot_part" "$root_part" "$home_part"
+  mount_partitions "$boot_part" "$root_part" "$home_part"
+
+  install_base "$fw"
+  configure_system "$fw" "$tz" "$hostname" "$username" "$disk" "$rootpass" "$userpass"
+
+  unset rootpass userpass
+  msg "Installation complete. Please reboot and remove the installation media."
+}
+
+main "$@"
