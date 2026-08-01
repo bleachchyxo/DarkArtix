@@ -1,0 +1,21 @@
+curl -fsSL -o "$USER_DIR/.config/dwm/dwm-fullgaps.diff" \
+    https://dwm.suckless.org/patches/fullgaps/dwm-fullgaps-20200508-7b77734.diff
+
+patch -d "$USER_DIR/.config/dwm" < "$USER_DIR/.config/dwm/dwm-fullgaps.diff"
+
+cp "$(dirname "$0")/Files/dwm-volume-keys.patch" \
+   "$USER_DIR/.config/dwm/"
+
+patch -d "$USER_DIR/.config/dwm" \
+   < "$USER_DIR/.config/dwm/dwm-volume-keys.patch"
+
+sed -i 's/static const unsigned int gappx     = 5;/static const unsigned int gappx     = 15;/' \
+    "$USER_DIR/.config/dwm/config.def.h"
+
+sed -i '8s/topbar\s*=\s*1;/topbar = 0;/' \
+    "$USER_DIR/.config/dwm/config.def.h"
+
+sed -i 's/#define MODKEY Mod1Mask/#define MODKEY Mod4Mask/' \
+    "$USER_DIR/.config/dwm/config.def.h"
+
+make -C "$USER_DIR/.config/dwm" install
