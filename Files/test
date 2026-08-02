@@ -56,7 +56,7 @@ find_network_status() {
         iface=${dev##*/}
         case $iface in
             wl*) network_status=" $iface" ;;
-            *)   network_status=" $iface" ;;
+            *)   network_status=" $iface" ;;
         esac
         return
     done
