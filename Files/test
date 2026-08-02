@@ -102,7 +102,7 @@ update_battery() {
     read -r capacity < "$battery/capacity"
     read -r state < "$battery/status"
     icon=$(battery_icon "$capacity")
-    [ "$state" = Charging ] && icon="$icon"
+    [ "$state" = Charging ] && icon=" $icon"
     battery_status="$icon $capacity%"
     [ "$battery_status" != "$last_battery" ] && { last_battery=$battery_status; updated=1; }
     notify_battery_thresholds
