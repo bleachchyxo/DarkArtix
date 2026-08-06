@@ -1,0 +1,50 @@
+[global]
+    ### Position
+    origin = bottom-right
+    offset = 5x25
+
+    ### Size
+    width = 350
+    height = 300
+    notification_limit = 10
+
+    ### Icons
+    icon_position = left
+    max_icon_size = 48
+
+    ### Text
+    font = Segoe UI 10
+    markup = full
+    format = "<b>%s</b>\n%b"
+
+    ### Behavior
+    follow = none
+    word_wrap = yes
+    separator_height = 2
+    padding = 12
+    horizontal_padding = 12
+    frame_width = 1
+    corner_radius = 10
+
+    ### Timing
+    idle_threshold = 120
+    show_age_threshold = 60
+    sort = yes
+
+[urgency_low]
+    background = "#fcfcfc"
+    foreground = "#000000"
+    frame_color = "#000000"
+    timeout = 5
+
+[urgency_normal]
+    background = "#fcfcfc"
+    foreground = "#000000"
+    frame_color = "#000000"
+    timeout = 5
+
+[urgency_critical]
+    background = "#fcfcfc"
+    foreground = "#000000"
+    frame_color = "#000000"
+    timeout = 0
