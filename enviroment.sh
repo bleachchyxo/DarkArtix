@@ -31,7 +31,8 @@ pacman -S --noconfirm \
   xorg xorg-xinit \
   ttf-dejavu ttf-font-awesome \
   alsa-utils-runit \
-  xcompmgr
+  xcompmgr \
+  dunst libnotify
 
 # .config 
 mkdir -p "$USER_DIR/.config"  # Using $SUDO_USER to point to correct home directory
