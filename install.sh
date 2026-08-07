@@ -144,7 +144,7 @@ EOF
 
 install_base_packages() {
   local firmware="$1"
-  local packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub)
+  local packages=(base base-devel runit elogind-runit linux linux-firmware neovim networkmanager networkmanager-runit grub git)
   [[ "$firmware" == UEFI ]] && packages+=(efibootmgr)
   basestrap /mnt "${packages[@]}"
   fstabgen -U /mnt >> /mnt/etc/fstab
