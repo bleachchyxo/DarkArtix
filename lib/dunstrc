@@ -24,7 +24,7 @@
     padding = 12
     horizontal_padding = 12
     frame_width = 1
-    corner_radius = 10
+    corner_radius = 5
 
     ### Timing
     idle_threshold = 120
