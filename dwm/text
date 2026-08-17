@@ -1,0 +1,607 @@
+a general-purpose workstation that needs to do demanding things while also protecting a large amount of valuable personal data:
+
+VMs, sometimes with heavy games
+Wine
+local LLMs
+Git/GitHub
+email
+a large local photo/archive store
+RAID
+potentially hostile downloads/USB devices
+privacy against surveillance
+recovery from corruption/ransomware
+and you want very little software and code
+
+That means I would not make DarkArtix itself one giant fortress.
+
+I'd make the host boring and trusted, and make everything interesting happen in disposable or compartmentalized environments.
+
+The architecture I'd settle on
+                         DARKARTIX HOST
+                              │
+                ┌─────────────┼─────────────┐
+                │             │             │
+             TRUSTED       DATA VAULT     ISOLATED
+             DOMAIN                       DOMAINS
+                │             │             │
+              dwm          encrypted       │
+             shell         storage          │
+             editor            │            │
+                │             │       ┌─────┼─────┐
+                │             │       │     │     │
+                │             │    Browser Wine  USB
+                │             │       │     │     │
+                │             │       └─────┼─────┘
+                │             │             │
+                │             │          NETBOX
+                │             │             │
+                │             │          Internet
+                │
+                └─────── no automatic access ───────┘
+
+The data vault is the important new piece.
+
+1. Your files should be more protected than your applications
+
+Your biggest asset isn't the browser.
+
+It's probably the accumulated data:
+
+photos
+emails
+documents
+Git repositories
+LLM models
+VM images
+personal archives
+
+So I would make a rule:
+
+The host and applications do not automatically have access to the data vault.
+
+Instead:
+
+DATA VAULT
+    │
+    ├── photos
+    ├── email archive
+    ├── documents
+    ├── source code
+    └── other personal data
+
+is mounted/available only when you deliberately need it.
+
+Your browser should never see it.
+
+Your Wine applications should never see it.
+
+A random downloaded binary should never see it.
+
+A USB inspector should never see it.
+
+That is much more powerful than trying to sandbox every program perfectly.
+
+2. RAID is not your safety net
+
+This is extremely important given what you said about "stable OS from brick."
+
+RAID protects primarily against certain hardware failures.
+
+It does not protect you from:
+
+rm -rf
+ransomware
+malware
+filesystem corruption
+bad administrator action
+stolen machine
+fire
+
+If ransomware can write to every RAID member, you've got a very healthy RAID containing encrypted garbage.
+
+So I'd separate:
+
+LIVE DATA
+    ↓
+RAID
+
+from:
+
+RECOVERY
+    ↓
+offline / disconnected backup
+
+The minimalist solution doesn't need a giant backup system.
+
+Something as conceptually simple as:
+
+             DATA
+              │
+          ┌───┴───┐
+          │       │
+        RAID    BACKUP
+                  │
+              disconnected
+
+is vastly more important than another 500 lines of sandbox code.
+
+And periodically test restoring from it.
+
+3. I'd actually keep the data vault on a separate filesystem
+
+Something like:
+
+/
+├── system
+├── home
+│
+└── vault
+     ├── photos
+     ├── mail
+     ├── git
+     └── documents
+
+with the vault encrypted at rest.
+
+Then the important question becomes:
+
+Who gets the vault key?
+
+Not:
+
+"Did Firefox have permission to /home/user/Documents?"
+
+If Firefox never receives the vault key and the vault isn't mounted, there is nothing for Firefox to access.
+
+That's an enormously cleaner security model.
+
+4. Your browser becomes disposable
+
+This is where DarkBox makes sense.
+
+darkbox firefox
+
+gets:
+
+bwrap
+user namespace
+PID namespace
+IPC namespace
+mount namespace
+Landlock
+restricted /dev
+disposable home
+no D-Bus
+no vault
+isolated network
+isolated display
+
+Landlock is particularly attractive here because it is an unprivileged kernel security mechanism designed specifically to add restrictions to existing permissions, and its rules can only further restrict a process rather than grant it new access.
+
+That fits your "least code, defense in depth" philosophy extremely well.
+
+5. Your browser should never directly touch the physical network
+
+I agree with your previous idea completely.
+
+Firefox
+   │
+   ▼
+DarkBox
+   │
+   ▼
+NETBOX
+   │
+   ▼
+VPN / Tor / proxy / direct
+   │
+   ▼
+physical NIC
+
+The browser knows nothing about:
+
+wlan0
+eth0
+your LAN
+your router
+your host routing table
+
+It gets a virtual network.
+
+If you destroy NetBox:
+
+Firefox ──X── Internet
+
+while:
+
+HOST ───────── Internet
+
+can remain unaffected.
+
+That's an excellent containment property.
+
+6. Don't put your privacy logic inside applications
+
+This is another place I'd simplify.
+
+Don't make every browser/application understand:
+
+VPN
+Tor
+proxychains
+DNS
+kill switch
+routing
+
+Make the network domain understand those things.
+
+For example:
+
+                    NETBOX
+                      │
+               ┌──────┴──────┐
+               │             │
+             VPN            Tor
+               │             │
+               └──────┬──────┘
+                      │
+                   Internet
+
+Then:
+
+browser → NETBOX
+
+That's all the browser needs to know.
+
+It also means you can kill/rebuild the network environment without modifying applications.
+
+7. Git deserves its own small compartment
+
+Your GitHub credentials are valuable.
+
+I would not put your SSH private key in the general host environment if you're serious about this architecture.
+
+Instead:
+
+Git work environment
+    │
+    ├── source tree
+    ├── git
+    ├── SSH/GitHub credential
+    └── network
+
+Your browser never gets that credential.
+
+Your Wine applications never get that credential.
+
+Your USB environment never gets that credential.
+
+The credential belongs to the Git compartment.
+
+And when you're finished, you can shut that environment down.
+
+That's compartmentalization without requiring a VM for every activity.
+
+8. Local LLMs are an interesting case
+
+You have two different things:
+
+LLM MODEL FILES
+        +
+LLM EXECUTION
+
+Model files can be huge and valuable, so they belong in your data vault.
+
+But executing an arbitrary model/application isn't automatically trustworthy.
+
+I'd do:
+
+vault/models/
+       │
+       │ read-only
+       ▼
+LLM environment
+       │
+       ├── no write access to vault
+       ├── no credentials
+       └── controlled network
+
+So the model can consume your 80 GB model file without being able to modify the master copy.
+
+That's a recurring principle:
+
+Share large data read-only whenever possible.
+
+9. Wine deserves the same treatment as a hostile application
+
+Wine is particularly interesting because Windows applications are not something I'd put in the trusted host environment by default.
+
+Give Wine:
+
+Wine environment
+├── disposable Windows prefix
+├── disposable home
+├── no vault
+├── no SSH credentials
+├── no D-Bus
+├── controlled devices
+└── NETBOX
+
+If some random .exe turns out to be malicious:
+
+destroy Wine environment
+
+instead of spending an afternoon figuring out what it modified.
+
+10. Heavy games / VMs are the awkward exception
+
+This is where I would not force everything through bwrap.
+
+You sometimes need:
+
+GPU
+large memory
+high I/O
+VMs
+gaming
+Wine
+
+Trying to make those behave like tiny desktop sandboxes could make DarkArtix miserable.
+
+Instead, use a VM when you actually need VM isolation.
+
+For example:
+
+HOST
+ │
+ ├── normal Linux
+ │
+ └── gaming VM
+       ├── GPU
+       ├── game
+       └── disposable/controlled environment
+
+And importantly:
+
+Don't give the gaming VM your data vault.
+
+Gaming performance and security don't need to be enemies if the valuable data isn't exposed to the guest.
+
+11. USB should be its own workflow
+
+I'd keep the model we developed:
+
+USB insertion
+      ↓
+DO NOT AUTOMOUNT
+      ↓
+user: "inspect"
+      ↓
+USBBOX
+      ↓
+filesystem mounted there
+      ↓
+inspect
+      ↓
+explicitly export selected files
+      ↓
+destroy USBBOX
+
+The trusted host receives copies, not a mounted USB filesystem.
+
+And USBBox gets:
+
+network = NONE
+vault = NONE
+credentials = NONE
+host home = NONE
+
+That's an extremely clean boundary.
+
+There is a deeper limitation: if the host kernel itself handles the physical USB controller/device, this is not equivalent to Qubes' dedicated USB qube. Qubes isolates USB controllers specifically to reduce exposure of its trusted domain to malicious USB devices.
+
+So I would call your first version USB filesystem isolation, not full USB-controller isolation.
+
+12. Your "surveillance" goal needs a different mental model
+
+This is important.
+
+There are at least three different threats:
+
+Network surveillance
+ISP
+Wi-Fi observer
+LAN attacker
+website tracking
+DNS observation
+
+NetBox + VPN/Tor can help here.
+
+Application compromise
+malicious website
+malicious file
+malicious executable
+
+DarkBox helps here.
+
+Host compromise
+kernel exploit
+firmware compromise
+malicious hypervisor
+physical attacker
+
+None of the above guarantees protection here.
+
+And no Linux design can honestly promise "surveillance-proof."
+
+For example, if you log into Google, Google knows that account activity. Tor doesn't change that fundamental fact.
+
+Privacy architecture needs to distinguish:
+
+hiding network metadata
+
+from:
+
+hiding identity
+
+from:
+
+preventing endpoint compromise.
+
+They're different problems.
+
+13. I'd prioritize recovery above almost everything
+
+You said something very revealing:
+
+"all my files safe ... meaning more this time as stable os from brick"
+
+Then recovery should be one of DarkArtix's first-class security features, not an afterthought.
+
+Imagine:
+
+DarkArtix gets completely destroyed.
+
+Your ideal response should be:
+
+reinstall DarkArtix
+        ↓
+restore configuration
+        ↓
+unlock data vault
+        ↓
+restore personal data
+        ↓
+continue
+
+Not:
+
+"Oh shit, my entire digital life was on that machine."
+
+Your OS should therefore be replaceable.
+
+Your data should not be.
+
+That's a very powerful minimalist philosophy:
+
+The operating system is disposable. The data is not.
+
+14. This actually makes DarkArtix simpler
+
+Notice what happens when we design it this way.
+
+We don't need DarkArtix to protect everything equally.
+
+We have:
+
+                    DARKARTIX
+                        │
+       ┌────────────────┼────────────────┐
+       │                │                │
+     HOST             VAULT            BOXES
+       │                │                │
+    minimal          encrypted        disposable
+    trusted          important        untrusted
+
+The host doesn't need to be a fortress containing every feature.
+
+It needs to be small enough that you can understand it.
+
+The vault doesn't need to run applications.
+
+It needs to store things safely.
+
+The boxes don't need to persist.
+
+They need to contain things you don't trust.
+
+That's an extremely clean division.
+
+15. My final design for your use case
+
+I'd aim for this:
+
+                         DARKARTIX
+                             │
+                    ┌────────┴────────┐
+                    │                 │
+                 TRUSTED           UNTRUSTED
+                    │                 │
+                  dwm              DARKBOX
+                    │                 │
+              ┌─────┼─────┐      ┌────┼────┐
+              │     │     │      │    │    │
+            shell  git   admin  web  wine USB
+              │           │      │    │    │
+              │           │      └────┼────┘
+              │           │           │
+              │           │         NETBOX
+              │           │           │
+              │           │       VPN/Tor/etc
+              │           │
+              └───────────┼───────────────┐
+                          │               │
+                       DATA VAULT      OFFLINE
+                          │             BACKUP
+                          │
+                     RAID/storage
+
+And I'd establish these rules:
+
+Rule 1: The host is replaceable.
+
+Rule 2: The vault is not automatically mounted.
+
+Rule 3: Untrusted applications never see the vault.
+
+Rule 4: Untrusted applications don't see physical networking.
+
+Rule 5: USB is never automatically trusted or mounted.
+
+Rule 6: Promotion means explicit copying, never mounting the untrusted environment into the host.
+
+Rule 7: Disposable environments disappear after use.
+
+Rule 8: Git credentials live only where Git needs them.
+
+Rule 9: Large model/data stores are exposed read-only whenever possible.
+
+Rule 10: RAID is availability; separate offline backups are recovery.
+
+Rule 11: Heavy workloads get VMs when appropriate instead of contorting the lightweight sandbox.
+
+Rule 12: No permanent DarkBox daemon.
+
+And I would not add much more.
+
+I wouldn't add SELinux just because "more security is better."
+
+I wouldn't add AppArmor just because it sounds useful.
+
+I wouldn't add a security daemon.
+
+I wouldn't add a policy database.
+
+I wouldn't build a custom encrypted filesystem.
+
+I wouldn't implement my own VPN.
+
+I wouldn't write my own Tor implementation.
+
+I wouldn't build a custom VM manager.
+
+And I wouldn't make DarkArtix automatically sandbox everything.
+
+Use the kernel primitives that already exist.
+
+Namespaces + bwrap + Landlock + nftables + LUKS + VMs where actually useful + disciplined backups.
+
+Landlock is particularly attractive because its design is explicitly to let unprivileged applications add restrictions to themselves, rather than requiring another privileged policy daemon.
+
+The result isn't "the most secure Linux possible."
+
+It's something I think is much more valuable for your goal:
+
+A small Linux system where the things most likely to be compromised are disposable, the things most valuable are normally inaccessible, the network is a replaceable compartment, removable media is treated as hostile until proven otherwise, and the entire operating system can be thrown away and rebuilt without losing your life.
+
+That's the security/minimalism balance I'd optimize DarkArtix around.
