@@ -37,7 +37,7 @@ make -C "$USER_DIR/.config/dmenu" install || {
 }
 
 git -C "$USER_DIR/.config" clone --depth 1 \
-    "https://github.com/bleachchyxo/dmenu" \
+    "https://github.com/bleachchyxo/dwm" \
     "$USER_DIR/.config/dwm" || { echo "Failed to clone dwm"; exit 1; }
 
 make -C "$USER_DIR/.config/dwm" install || {
