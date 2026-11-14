@@ -25,7 +25,7 @@ pacman -S --noconfirm \
 mkdir -p "$USER_DIR/.config"
 
 git -C "$USER_DIR/.config" clone --depth 1 \
-    "https://git.suckless.org/dmenu" \
+    "https://github.com/bleachchyxo/dmenu" \
     "$USER_DIR/.config/dmenu" || { echo "Failed to clone dmenu"; exit 1; }
 
 sed -i 's/static int topbar = 1;/static int topbar = 0;/' \
