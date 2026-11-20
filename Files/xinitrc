@@ -1,144 +1,158 @@
-#!/bin/sh
+#!/bin/bash
 [ -f "$HOME/.xprofile" ] && . "$HOME/.xprofile"
 pgrep -x xcompmgr >/dev/null || xcompmgr -C -t .25 -r 2.2 -o .25 &
 
-battery_icon() {
-    case $1 in
-        9[5-9]|100) echo "" ;;
-        7[5-9]|8[0-9]|9[0-4]) echo "" ;;
-        5[0-9]|6[0-9]|7[0-4]) echo "" ;;
-        2[5-9]|3[0-9]|4[0-9]) echo "" ;;
-        *) echo "" ;;
-    esac
-}
-
-volume_icon() {
-    [ "$2" = off ] && echo "" && return
-    [ "$1" -eq 0 ] && echo "" && return
-    [ "$1" -le 50 ] && echo "" && return
-    echo ""
-}
+# The status bar loop takes one step every 0.1 seconds.
+# Network and bluetooth refresh every 5 steps, battery every 10.
 
 update_time() {
-    minute=$(date +%M)
-    [ "$minute" = "$last_minute" ] && return
-    last_minute=$minute
-    last_time=$(date '+%-I:%M %p')
-    updated=1
+    ((EPOCHSECONDS >= next_minute)) || return
+
+    current_second=$EPOCHSECONDS
+    printf -v current_time '%(%-I:%M %p)T' "$current_second"
+    next_minute=$(((current_second / 60 + 1) * 60))
 }
 
 update_volume() {
     [ "$have_audio" -eq 1 ] || return
-    set -- $(amixer get Master | awk -F'[][]' '
-        /Mono:/||/Left:/ {gsub("%",""); print $2,$6; exit}
-        /Playback.*%/ {gsub("%",""); print $2,$4; exit}
-    ')
-    volume_status="$(volume_icon "$1" "$2")"
-    if [ "$2" = off ]; then
-        volume_status="$volume_status Muted"
-    elif [ "$1" -eq 0 ]; then
-        volume_status="$volume_status 0%"
-    else
-        volume_status="$volume_status $1%"
-    fi
-    [ "$volume_status" = "$last_volume" ] && return
-    last_volume=$volume_status
-    updated=1
-}
 
-# Sets $network_status directly, no subshell/command substitution
-find_network_status() {
-    network_status=" Offline"
-    for dev in /sys/class/net/*; do
-        [ -f "$dev/operstate" ] || continue
-        read -r state < "$dev/operstate"
-        [ "$state" = up ] || continue
-        iface=${dev##*/}
-        case $iface in
-            wl*) network_status=" $iface" ;;
-            *)   network_status=" $iface" ;;
-        esac
-        return
-    done
+    mixer_output=$(amixer get Master)
+    read -r line <<< "${mixer_output#*\[}"   # for example: 60%] [-12.00dB] [on]
+    volume=${line%%\%*}
+
+    if [[ $line == *'[off]'* ]]; then
+        volume_status=" Muted"
+    elif ((volume == 0)); then
+        volume_status=" 0%"
+    elif ((volume <= 50)); then
+        volume_status=" $volume%"
+    else
+        volume_status=" $volume%"
+    fi
 }
 
 update_network() {
-    [ $((tick % 5)) -eq 0 ] || return
-    find_network_status
-    [ "$network_status" = "$last_network" ] && return
-    last_network=$network_status
-    updated=1
-}
+    ((tick % 5 == 0)) || return
 
-# Sets $battery directly, no subshell/command substitution
-find_battery_path() {
-    battery=
-    for b in /sys/class/power_supply/BAT*; do
-        [ -d "$b" ] && { battery=$b; return; }
+    network_status=" Offline"
+    for device in /sys/class/net/*; do
+        [ -f "$device/operstate" ] || continue
+        read -r link_state < "$device/operstate"
+        [ "$link_state" = up ] || continue
+
+        interface=${device##*/}
+        case $interface in
+            wl*) network_status=" $interface" ;;
+            *)   network_status=" $interface" ;;
+        esac
+        break
     done
 }
 
+read_bluetooth_device() {
+    device_name= device_battery= device_connected=
+
+    while read -r key value; do
+        case $key in
+            Name:)      device_name=$value ;;
+            Connected:) device_connected=$value ;;
+            Battery)    device_battery=${value#*\(}; device_battery=${device_battery%\)} ;;
+        esac
+    done <<< "$(bluetoothctl info "$1" 2>/dev/null)"
+}
+
+update_bluetooth() {
+    ((tick % 5 == 0)) || return
+    [ "$have_bluetooth" -eq 1 ] || return
+
+    bluetooth_status=
+    while read -r _ address _; do
+        read_bluetooth_device "$address"
+        [ "$device_connected" = yes ] || continue
+
+        bluetooth_status=" ${device_name:-$address}"
+        [ -n "$device_battery" ] && bluetooth_status+=" ($device_battery%)"
+        break
+    done < <(bluetoothctl devices Connected 2>/dev/null)
+}
+
+choose_battery_icon() {
+    case $1 in
+        9[5-9]|100)       icon="" ;;
+        7[5-9]|8?|9[0-4]) icon="" ;;
+        5?|6?|7[0-4])     icon="" ;;
+        2[5-9]|3?|4?)     icon="" ;;
+        *)                icon="" ;;
+    esac
+}
+
 notify_battery_thresholds() {
-    [ "$state" = Discharging ] || return
-    if [ "$last_capacity" -gt 10 ] && [ "$capacity" -le 10 ]; then
+    [ "$battery_state" = Discharging ] || return
+
+    ((last_capacity > 10 && capacity <= 10)) &&
         notify-send "Low Battery" "Battery at $capacity%. Please charge."
-        low_warned=1
-    fi
-    if [ "$last_capacity" -gt 5 ] && [ "$capacity" -le 5 ]; then
+    ((last_capacity > 5 && capacity <= 5)) &&
         notify-send "Critical Battery" "Battery at $capacity%. Connect the charger."
-        critical_warned=1
-    fi
 }
 
 update_battery() {
-    [ $((tick % 10)) -eq 0 ] || return
-    find_battery_path
-    if [ -z "$battery" ]; then
-        [ -n "$last_battery" ] && updated=1
-        last_battery=
+    ((tick == 0)) || return
+
+    set -- /sys/class/power_supply/BAT*
+    battery_path=$1
+    if [ ! -d "$battery_path" ]; then
+        battery_status=
         last_capacity=100
         return
     fi
-    read -r capacity < "$battery/capacity"
-    read -r state < "$battery/status"
-    icon=$(battery_icon "$capacity")
-    [ "$state" = Charging ] && icon=" $icon"
+
+    read -r capacity < "$battery_path/capacity"
+    read -r battery_state < "$battery_path/status"
+
+    choose_battery_icon "$capacity"
+    [ "$battery_state" = Charging ] && icon=" $icon"
     battery_status="$icon $capacity%"
-    [ "$battery_status" != "$last_battery" ] && { last_battery=$battery_status; updated=1; }
+
     notify_battery_thresholds
     last_capacity=$capacity
 }
 
 refresh_status_line() {
-    [ "$updated" -eq 1 ] || return
-    status=" $last_network"
-    [ -n "$last_battery" ] && status="$status | $last_battery"
-    [ -n "$last_volume" ] && status="$status | $last_volume"
-    xsetroot -name "$status | $last_time "
+    status=
+    for part in "$bluetooth_status" "$network_status" "$volume_status" "$battery_status"; do
+        [ -n "$part" ] && status="${status:+$status | }$part"
+    done
+
+    status=" $status | $current_time "
+    [ "$status" = "$last_status" ] && return
+
+    last_status=$status
+    xsetroot -name "$status"
+}
+
+run_status_bar() {
+    exec {idle_pipe}<> <(:)   # waiting on an idle pipe sleeps without starting a process
+    tick=0
+
+    while :; do
+        tick=$(((tick + 1) % 10))
+
+        update_time
+        update_volume
+        update_bluetooth
+        update_network
+        update_battery
+        refresh_status_line
+
+        read -rt .1 -u "$idle_pipe"
+    done
 }
 
 have_audio=0
-aplay -l 2>/dev/null | grep -q '^card' && have_audio=1
-
-last_time=
-last_minute=
-last_volume=
-last_network=
-last_battery=
+have_bluetooth=0
 last_capacity=100
-low_warned=0
-critical_warned=0
-tick=0
+aplay -l 2>/dev/null | grep -q '^card' && have_audio=1
+command -v bluetoothctl >/dev/null && have_bluetooth=1
 
-while :; do
-    updated=0
-    tick=$((tick + 1))
-    update_time
-    update_volume
-    update_network
-    update_battery
-    refresh_status_line
-    sleep .1
-done &
-
+run_status_bar &
 exec dwm
